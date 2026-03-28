@@ -83,9 +83,13 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 	defer zeroBytes(encoded)
 
 	// ── Modify unicodePwd ─────────────────────────────────────────────────────
-	c.log.Info("AD: sending unicodePwd modify request")
+	// Active Directory requires a DELETE+ADD operation for password changes.
+	// For a password reset (using delegated machine credentials), we DELETE
+	// with an empty value and ADD the new password in a single atomic modify.
+	c.log.Info("AD: sending unicodePwd modify request (delete+add)")
 	modReq := ldap.NewModifyRequest(dn, nil)
-	modReq.Replace("unicodePwd", []string{string(encoded)})
+	modReq.Delete("unicodePwd", []string{})
+	modReq.Add("unicodePwd", []string{string(encoded)})
 	if err := conn.Modify(modReq); err != nil {
 		return fmt.Errorf("AD modify unicodePwd: %w", err)
 	}
