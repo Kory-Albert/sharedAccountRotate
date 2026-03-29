@@ -7,6 +7,11 @@
 // Location: C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json
 // Permissions: created 0600 (owner-read/write only, enforced via Windows ACL
 // when possible). The file contains no secrets – only the timestamp.
+//
+// OutOfSync flag: if the LSA write succeeds but the AD write subsequently fails
+// hard (all retries exhausted), the state file is written with OutOfSync=true.
+// The service will refuse to rotate again until an operator clears the flag,
+// preventing a second rotation that would produce yet another mismatched pair.
 
 package state
 
@@ -23,8 +28,16 @@ const defaultStatePath = defaultStateDir + `\sharedAccountRotate_state.json`
 
 // State holds the persisted rotation history.
 type State struct {
-	LastRotation time.Time `json:"last_rotation"` // UTC timestamp of last successful rotation
-	RotationCount int      `json:"rotation_count"` // total successful rotations (informational)
+	LastRotation  time.Time `json:"last_rotation"`  // UTC timestamp of last successful rotation
+	RotationCount int       `json:"rotation_count"` // total successful rotations (informational)
+
+	// OutOfSync is set to true when the LSA write succeeded but the AD write
+	// failed after all retries. In this state the local LSA secret holds a
+	// password that does not match Active Directory, making auto-logon
+	// impossible. The service will refuse further rotations until an operator
+	// manually resolves the mismatch and clears this flag (set to false and
+	// save the file, or delete the state file entirely to reset).
+	OutOfSync bool `json:"out_of_sync,omitempty"`
 }
 
 // Manager reads and writes the state file.
@@ -94,20 +107,36 @@ func (m *Manager) Save(s *State) error {
 
 // IsDue returns true if it is time to rotate based on the last rotation
 // timestamp and the configured interval in days. In dev mode it always returns
-// true.
-func (m *Manager) IsDue(s *State, intervalDays int, devMode bool) bool {
+// true. Returns false (with a non-nil error) when the state is out of sync —
+// the caller must surface the error and halt until an operator intervenes.
+func (m *Manager) IsDue(s *State, intervalDays int, devMode bool) (bool, error) {
+	if s.OutOfSync {
+		return false, fmt.Errorf(
+			"state is OUT OF SYNC: LSA and AD passwords do not match – " +
+				"resolve the mismatch manually then set out_of_sync=false in %s " +
+				"(or delete the file) before rotations will resume",
+			m.path,
+		)
+	}
 	if devMode {
-		return true
+		return true, nil
 	}
 	if s.LastRotation.IsZero() {
-		return true // never rotated
+		return true, nil // never rotated
 	}
 	next := s.LastRotation.AddDate(0, 0, intervalDays)
-	return time.Now().UTC().After(next)
+	return time.Now().UTC().After(next), nil
 }
 
-// MarkSuccess records a successful rotation.
+// MarkSuccess records a successful rotation and clears any out-of-sync flag.
 func (m *Manager) MarkSuccess(s *State) {
 	s.LastRotation = time.Now().UTC()
 	s.RotationCount++
+	s.OutOfSync = false
+}
+
+// MarkOutOfSync records that LSA was updated but AD could not be updated.
+// The service will refuse further rotations until this is manually cleared.
+func (m *Manager) MarkOutOfSync(s *State) {
+	s.OutOfSync = true
 }

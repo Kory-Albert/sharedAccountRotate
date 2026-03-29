@@ -13,8 +13,10 @@
 //   2. If not due, sleep until the next check and repeat.
 //   3. If due, wait until the workstation has been idle for --idle-hours.
 //   4. Generate a new random password.
-//   5. Set the password in Active Directory.
-//   6. Store the password in the LSA secret (Autologon).
+//   5. Store the password in the LSA secret (Autologon) – written first so a
+//      failure here leaves AD untouched and the machine in a safe state.
+//   6. Set the password in Active Directory – retried for up to 5 minutes on
+//      failure; on hard failure the out-of-sync flag is set and rotations halt.
 //   7. Verify both writes.
 //   8. Log off the target user's session.
 //   9. Record the successful rotation and go back to step 1.
@@ -24,6 +26,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -360,7 +363,20 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 			st = &state.State{}
 		}
 
-		if !s.states.IsDue(st, s.cfg.RotationDays, s.cfg.DevMode) {
+		if due, err := s.states.IsDue(st, s.cfg.RotationDays, s.cfg.DevMode); err != nil {
+			// OutOfSync: LSA and AD are mismatched. Log loudly every poll cycle
+			// so the condition is visible in the log file, then sleep and recheck
+			// (an operator may clear the flag while the service is running).
+			s.cfg.Log.Errorf("rotation: HALTED – %v", err)
+			s.cfg.Log.Error("rotation: manual intervention required before rotations will resume")
+			select {
+			case <-stop:
+				s.cfg.Log.Info("rotation: stop signal received – exiting loop")
+				return nil
+			case <-time.After(duePollInterval):
+				continue
+			}
+		} else if !due {
 			next := st.LastRotation.AddDate(0, 0, s.cfg.RotationDays)
 			s.cfg.Log.Infof("rotation: not due yet (last=%s next=%s) – sleeping %v",
 				st.LastRotation.Format(time.RFC3339),
@@ -410,6 +426,29 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 
 		// ── Phase 3: Perform the rotation ─────────────────────────────────────
 		if err := s.rotate(); err != nil {
+			// Check for the special out-of-sync case: LSA was updated but AD
+			// write failed after all retries. Further rotation attempts would
+			// produce yet another mismatched pair, so we persist the flag and
+			// halt. The error message in the state file and logs tells the
+			// operator exactly what to do.
+			var oos *outOfSyncError
+			if errors.As(err, &oos) {
+				s.cfg.Log.Errorf("rotation: OUT OF SYNC – %v", err)
+				s.cfg.Log.Error("rotation: HALTING – no further rotations until operator clears out_of_sync in state file")
+				s.states.MarkOutOfSync(st)
+				if saveErr := s.states.Save(st); saveErr != nil {
+					s.cfg.Log.Errorf("rotation: could not persist out-of-sync flag: %v – flag is in memory only until service restart", saveErr)
+				}
+				// Continue looping so the service stays alive and keeps logging
+				// the halted state (operator may be watching the log remotely).
+				select {
+				case <-stop:
+					return nil
+				case <-time.After(duePollInterval):
+				}
+				continue
+			}
+
 			s.cfg.Log.Errorf("rotation: FAILED: %v", err)
 			// Back off before retrying to avoid hammering AD on persistent failures.
 			backoff := 15 * time.Minute
@@ -446,32 +485,65 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 }
 
 // rotate performs the full password rotation sequence:
+//
 //  1. Generate password
-//  2. Set in AD
-//  3. Store in LSA
+//  2. Store in LSA  ← first, so a crash here leaves AD untouched
+//  3. Set in AD     ← retried aggressively; signals out-of-sync on hard failure
 //  4. Verify both
 //  5. Log off user
+//
+// Order rationale: true atomicity is impossible because AD and LSA are
+// independent systems with no shared transaction. Writing LSA first is the
+// safer choice:
+//
+//   - If the LSA write fails  → AD is untouched → old password still valid →
+//     clean retry next cycle. No lockout risk.
+//   - If the AD write fails after LSA succeeds → passwords are mismatched.
+//     The service retries the AD write for adSyncRetryDuration before giving
+//     up. On hard failure it persists OutOfSync=true in the state file and
+//     refuses further rotations until an operator intervenes. This is
+//     preferable to silently rotating again (which would write yet another
+//     mismatched pair).
+//
+// Rollback is intentionally not attempted: we do not know the previous AD
+// password, so we cannot restore it. The out-of-sync flag is the recovery
+// signal.
 func (s *Service) rotate() error {
 	s.cfg.Log.Info("rotation: ── PHASE 1: generating new password ──────────────────")
 	pw, err := password.Generate(passwordLength)
 	if err != nil {
 		return fmt.Errorf("password generate: %w", err)
 	}
-	// The password slice is zeroed on all exit paths.
+	// Zero the password on all exit paths. The defer runs after the AD retry
+	// loop, so pw remains valid for the full duration of the function.
 	defer password.Zero(pw)
 	s.cfg.Log.Infof("rotation: generated %d-character password (not logged)", len(pw))
 
-	// ── Phase 2: Active Directory ─────────────────────────────────────────────
-	s.cfg.Log.Info("rotation: ── PHASE 2: setting password in Active Directory ──────")
-	if err := s.adCli.SetPassword(s.cfg.Username, pw); err != nil {
-		return fmt.Errorf("AD set password: %w", err)
-	}
-
-	// ── Phase 3: LSA / Autologon ──────────────────────────────────────────────
-	s.cfg.Log.Info("rotation: ── PHASE 3: storing password in LSA (Autologon) ───────")
+	// ── Phase 2: LSA / Autologon (written first) ──────────────────────────────
+	// Writing LSA before AD means a crash or LSA failure leaves AD untouched.
+	// The old password remains valid everywhere and the next retry cycle starts
+	// cleanly.
+	s.cfg.Log.Info("rotation: ── PHASE 2: storing password in LSA (Autologon) ───────")
 	if err := s.lsaCli.StoreAutologonPassword(s.cfg.Domain, s.cfg.Username, pw); err != nil {
+		// LSA failed – AD has not been touched. Safe to return; next retry
+		// will generate a fresh password and try again from a clean state.
 		return fmt.Errorf("LSA store password: %w", err)
 	}
+	s.cfg.Log.Info("rotation: LSA password stored")
+
+	// ── Phase 3: Active Directory ─────────────────────────────────────────────
+	// LSA now holds the new password. We MUST get AD to match before returning.
+	// Retry aggressively for adSyncRetryDuration to ride out transient DC
+	// connectivity issues (the most common real-world failure cause).
+	s.cfg.Log.Info("rotation: ── PHASE 3: setting password in Active Directory ──────")
+	adErr := s.setADPasswordWithRetry(pw)
+	if adErr != nil {
+		// Hard failure: LSA has the new password but AD does not. The machine
+		// will be locked out on the next logon. Persist the out-of-sync flag
+		// so the service halts and the operator is alerted via the log.
+		return &outOfSyncError{cause: adErr}
+	}
+	s.cfg.Log.Info("rotation: AD password set")
 
 	// ── Phase 4: Verification ─────────────────────────────────────────────────
 	s.cfg.Log.Info("rotation: ── PHASE 4: verifying both writes ────────────────────")
@@ -508,3 +580,60 @@ func (s *Service) rotate() error {
 	s.cfg.Log.Info("rotation: ── ALL PHASES COMPLETE ────────────────────────────────")
 	return nil
 }
+
+// adSyncRetryDuration is how long to keep retrying the AD password write after
+// a successful LSA write. Covers transient DC connectivity blips while bounding
+// the window during which LSA and AD are mismatched.
+const adSyncRetryDuration = 5 * time.Minute
+
+// adSyncRetryInterval is how long to wait between AD retry attempts.
+const adSyncRetryInterval = 30 * time.Second
+
+// setADPasswordWithRetry attempts to set the AD password, retrying on failure
+// for up to adSyncRetryDuration. It is called only after the LSA write has
+// already succeeded, so every second of retry is a second the passwords are
+// mismatched — hence the tight interval and bounded total duration.
+func (s *Service) setADPasswordWithRetry(pw []byte) error {
+	deadline := time.Now().Add(adSyncRetryDuration)
+	attempt := 0
+	for {
+		attempt++
+		err := s.adCli.SetPassword(s.cfg.Username, pw)
+		if err == nil {
+			if attempt > 1 {
+				s.cfg.Log.Infof("rotation: AD password set after %d attempt(s)", attempt)
+			}
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("AD set password failed after %d attempt(s) over %v: %w",
+				attempt, adSyncRetryDuration, err)
+		}
+
+		s.cfg.Log.Errorf(
+			"rotation: AD set password attempt %d failed (LSA already updated – retrying in %v): %v",
+			attempt, adSyncRetryInterval, err,
+		)
+		time.Sleep(adSyncRetryInterval)
+	}
+}
+
+// outOfSyncError is returned by rotate() when the LSA write succeeded but the
+// AD write failed after all retries. The runLoop checks for this type to
+// persist the OutOfSync flag before returning the error.
+type outOfSyncError struct {
+	cause error
+}
+
+func (e *outOfSyncError) Error() string {
+	return fmt.Sprintf(
+		"CRITICAL – LSA updated but AD write failed after all retries: %v. "+
+			"Auto-logon will fail on next logon. "+
+			"Manually set the AD password to match the LSA secret, "+
+			"then clear out_of_sync in the state file to resume rotations.",
+		e.cause,
+	)
+}
+
+func (e *outOfSyncError) Unwrap() error { return e.cause }
