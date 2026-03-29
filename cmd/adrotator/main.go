@@ -83,11 +83,10 @@ func main() {
 	}
 
 	// ── Validate required flags ───────────────────────────────────────────────
-	if *flagDomain == "" || *flagUsername == "" {
-		if *flagSvcAction != "install" && *flagSvcAction != "remove" {
-			log.Fatalf("--domain and --username are required (got domain=%q username=%q)",
-				*flagDomain, *flagUsername)
-		}
+	// --domain is required for all modes except service removal (which needs no config).
+	// --username defaults to hostname above, so it never needs validation.
+	if *flagDomain == "" && *flagSvcAction != "remove" {
+		log.Fatalf("--domain is required")
 	}
 
 	// Default LDAP server to the domain name (works when SRV records are
