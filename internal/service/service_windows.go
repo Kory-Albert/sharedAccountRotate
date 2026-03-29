@@ -135,13 +135,23 @@ func installService(cfg *Config) error {
 	}
 	defer m.Disconnect()
 
-	// Build the command line that the SCM will use to start the service
+	// Build the command line that the SCM will use to start the service.
+	// The exe path must be double-quoted because it contains spaces
+	// ("C:\Program Files\..."). The SCM passes lpBinaryPathName verbatim to
+	// CreateProcessW, which applies the same tokenisation rules as the Windows
+	// command line — an unquoted path with spaces will be split on the first
+	// space, causing the service to fail to start.
+	// Domain, ldap-server, and username are also quoted in case they contain
+	// spaces (e.g. NetBIOS domain names).
 	args := fmt.Sprintf(
-		"--service run --domain %s --ldap-server %s --ldap-port %d --username %s --days %d --idle-hours %.2f",
+		"--service run --domain %q --ldap-server %q --ldap-port %d --username %q --days %d --idle-hours %.2f",
 		cfg.Domain, cfg.LDAPServer, cfg.LDAPPort, cfg.Username, cfg.RotationDays, cfg.IdleHours,
 	)
+	// Wrap the exe path in double quotes so the SCM correctly identifies it as
+	// the binary even though "Program Files" contains a space.
+	binPath := fmt.Sprintf("%q %s", destPath, args)
 
-	s, err := m.CreateService(serviceName, destPath+" "+args, mgr.Config{
+	s, err := m.CreateService(serviceName, binPath, mgr.Config{
 		DisplayName: serviceDisplayName,
 		Description: serviceDescription,
 		StartType:   mgr.StartAutomatic,
