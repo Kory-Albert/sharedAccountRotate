@@ -25,7 +25,9 @@ package service
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -89,33 +91,61 @@ func HandleServiceAction(cfg *Config) error {
 	}
 }
 
-// installService registers sharedAccountRotate with the Windows SCM.
+const installDir = `C:\Program Files\sharedAccountRotate`
+
+// installService installs the service to Program Files and registers with SCM.
+// It copies the binary to a standard location before creating the service.
 func installService(cfg *Config) error {
 	cfg.Log.Infof("service: installing %q", serviceName)
 
-	exePath, err := os.Executable()
+	// Get the current executable path
+	srcPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("service install – get executable path: %w", err)
 	}
+	// Resolve any symlinks to get the real path
+	srcPath, err = filepath.EvalSymlinks(srcPath)
+	if err != nil {
+		return fmt.Errorf("service install – resolve executable path: %w", err)
+	}
 
+	// Ensure installation directory exists
+	cfg.Log.Infof("service: creating installation directory %s", installDir)
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		return fmt.Errorf("service install – create directory: %w", err)
+	}
+
+	// Copy binary to installation directory
+	destPath := filepath.Join(installDir, "sharedAccountRotate.exe")
+	cfg.Log.Infof("service: copying binary to %s", destPath)
+	if err := copyFile(srcPath, destPath); err != nil {
+		return fmt.Errorf("service install – copy binary: %w", err)
+	}
+
+	// Verify the copy succeeded
+	if _, err := os.Stat(destPath); err != nil {
+		return fmt.Errorf("service install – verify binary copy: %w", err)
+	}
+	cfg.Log.Infof("service: binary copied successfully")
+
+	// Connect to SCM and create service
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("service install – connect SCM: %w", err)
 	}
 	defer m.Disconnect()
 
-	// Build the command line that the SCM will use to start the service.
-	// Pass through all required flags so the service starts correctly.
+	// Build the command line that the SCM will use to start the service
 	args := fmt.Sprintf(
 		"--service run --domain %s --ldap-server %s --ldap-port %d --username %s --days %d --idle-hours %.2f",
 		cfg.Domain, cfg.LDAPServer, cfg.LDAPPort, cfg.Username, cfg.RotationDays, cfg.IdleHours,
 	)
 
-	s, err := m.CreateService(serviceName, exePath+" "+args, mgr.Config{
-		DisplayName:  serviceDisplayName,
-		Description:  serviceDescription,
-		StartType:    mgr.StartAutomatic,
-		ServiceType:  1, // SERVICE_WIN32_OWN_PROCESS
+	s, err := m.CreateService(serviceName, destPath+" "+args, mgr.Config{
+		DisplayName: serviceDisplayName,
+		Description: serviceDescription,
+		StartType:   mgr.StartAutomatic,
+		ServiceType: 1, // SERVICE_WIN32_OWN_PROCESS
 	})
 	if err != nil {
 		return fmt.Errorf("service install – create: %w", err)
@@ -124,6 +154,37 @@ func installService(cfg *Config) error {
 
 	cfg.Log.Infof("service: %q installed successfully (StartType=Automatic)", serviceName)
 	return nil
+}
+
+// copyFile copies a file from src to dst, overwriting dst if it exists.
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	// Get source file info for permissions
+	stat, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Create destination file
+	destFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, stat.Mode())
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	// Copy content
+	_, err = io.Copy(destFile, sourceFile)
+	if err != nil {
+		return err
+	}
+
+	// Ensure data is written to disk
+	return destFile.Sync()
 }
 
 // removeService deletes the service from the SCM.

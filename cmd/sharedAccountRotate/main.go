@@ -161,6 +161,8 @@ Flags:
 		fmt.Fprintf(os.Stderr, `
 Examples:
   # Install as a Windows service
+  # This copies the binary to "C:\Program Files\sharedAccountRotate\" and
+  # registers the service with the Windows Service Control Manager.
   sharedAccountRotate.exe --service install --domain corp.example.com --days 30
 
   # Dev/test run – rotate immediately, no idle check
@@ -169,16 +171,23 @@ Examples:
   # Normal foreground run
   sharedAccountRotate.exe --domain corp.example.com --days 14 --idle-hours 3
 
-  # Logging
-  Options:
-    --loglevel <DEBUG|INFO|WARN|ERROR>
-
+  # Logging options: DEBUG | INFO | WARN | ERROR (default: INFO)
   sharedAccountRotate.exe --loglevel DEBUG --dev --domain corp.example.com
 
-  # Service control actions
+  # Service control actions (run from any location after install)
   sharedAccountRotate.exe --service start
   sharedAccountRotate.exe --service stop
   sharedAccountRotate.exe --service remove
+
+Installation:
+  The service install action performs the following steps:
+    1. Creates "C:\Program Files\sharedAccountRotate\"
+    2. Copies the binary to that directory
+    3. Verifies the copy succeeded before registering the service
+    4. Registers the service to run from the Program Files location
+    5. Sets the service to start automatically
+
+  The original binary can be deleted after successful installation.
 `)
 	}
 
