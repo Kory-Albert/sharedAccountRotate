@@ -206,14 +206,19 @@ func lsaOpenPolicy() (windows.Handle, error) {
 func lsaStorePrivateData(policy windows.Handle, name string, data []byte) error {
 	keyStr := newLSAString(name)
 	encoded := utf16LEBytes(data)
-	defer zeroBytes(encoded)
+	defer zeroBytes(encoded) // single allocation — zeroed on all exit paths
 
 	dataStr := lsaUnicodeString{
 		Length:        uint16(len(encoded)),
 		MaximumLength: uint16(len(encoded)),
 	}
 	if len(encoded) > 0 {
-		dataStr.Buffer = &utf16StringFromBytes(encoded)[0]
+		// Cast the first byte of the already-allocated encoded slice directly to
+		// *uint16 instead of calling utf16StringFromBytes, which would create a
+		// second []uint16 heap allocation holding the cleartext password with no
+		// corresponding zeroBytes call. encoded is UTF-16LE so the byte layout is
+		// identical to what *uint16 expects; the defer above zeros this memory.
+		dataStr.Buffer = (*uint16)(unsafe.Pointer(&encoded[0]))
 	}
 
 	r0, _, _ := procLsaStorePrivateData.Call(
@@ -287,6 +292,11 @@ func utf16LEBytes(b []byte) []byte {
 
 // utf16StringFromBytes reinterprets a byte slice as a []uint16 slice.
 // The slice must have even length.
+//
+// Note: this is intentionally NOT used in lsaStorePrivateData. Calling it
+// there would create a second heap allocation containing the cleartext password
+// with no corresponding zeroBytes cleanup. lsaStorePrivateData instead casts
+// the encoded []byte buffer pointer directly to *uint16.
 func utf16StringFromBytes(b []byte) []uint16 {
 	if len(b) == 0 {
 		return nil
