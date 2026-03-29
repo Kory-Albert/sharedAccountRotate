@@ -28,7 +28,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
-	"github.com/adrotator/adrotator/internal/logger"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
 )
 
 // ─── Windows API declarations ─────────────────────────────────────────────────

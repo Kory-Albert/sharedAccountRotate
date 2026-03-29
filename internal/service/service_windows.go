@@ -31,18 +31,18 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/adrotator/adrotator/internal/activity"
-	"github.com/adrotator/adrotator/internal/ad"
-	"github.com/adrotator/adrotator/internal/logger"
-	"github.com/adrotator/adrotator/internal/lsa"
-	"github.com/adrotator/adrotator/internal/password"
-	"github.com/adrotator/adrotator/internal/session"
-	"github.com/adrotator/adrotator/internal/state"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/activity"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/ad"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/lsa"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/password"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/session"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/state"
 )
 
 const (
-	serviceName        = "ADRotator"
-	serviceDisplayName = "AD Password Rotator"
+	serviceName        = "SharedAccountRotate"
+	serviceDisplayName = "Shared Account Password Rotator"
 	serviceDescription = "Rotates Active Directory auto-logon account password on a schedule."
 
 	// How often to poll the state file when a rotation is not yet due.
@@ -89,7 +89,7 @@ func HandleServiceAction(cfg *Config) error {
 	}
 }
 
-// installService registers adrotator with the Windows SCM.
+// installService registers sharedAccountRotate with the Windows SCM.
 func installService(cfg *Config) error {
 	cfg.Log.Infof("service: installing %q", serviceName)
 

@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/adrotator/adrotator/internal/logger"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
 )
 
 var (

@@ -19,7 +19,7 @@ import (
 
 	ldap "github.com/go-ldap/ldap/v3"
 
-	"github.com/adrotator/adrotator/internal/logger"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
 )
 
 // Client wraps an LDAP connection to Active Directory.

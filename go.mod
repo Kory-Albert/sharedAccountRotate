@@ -1,4 +1,4 @@
-module github.com/adrotator/adrotator
+module github.com/sharedAccountRotate/sharedAccountRotate
 
 go 1.22
 

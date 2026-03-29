@@ -1,4 +1,4 @@
-// adrotator - Active Directory password rotation service
+// sharedAccountRotate - Active Directory password rotation service
 //
 // Runs as a Windows Service under SYSTEM. On each configured interval it:
 //   1. Waits until the workstation has been idle for --idle-hours
@@ -8,7 +8,7 @@
 //   5. Verifies both writes succeeded
 //   6. Signs the current session out so the machine auto-logs back in
 //
-// All events are written to stdout AND to C:\Windows\Temp\adrotator.log.
+// All events are written to stdout AND to C:\Windows\Temp\sharedAccountRotate.log.
 // Passwords are never written to any log or output.
 
 package main
@@ -19,8 +19,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/adrotator/adrotator/internal/logger"
-	"github.com/adrotator/adrotator/internal/service"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
+	"github.com/sharedAccountRotate/sharedAccountRotate/internal/service"
 )
 
 // ─── CLI flags ────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ func main() {
 
 	// Initialise the dual logger (stdout + file) as early as possible so every
 	// subsequent message is captured.
-	log, err := logger.New(`C:\Windows\Temp\adrotator.log`)
+	log, err := logger.New(`C:\Windows\Temp\sharedAccountRotate.log`)
 	if err != nil {
 		// Fall back to stderr-only if the log file cannot be opened; do not
 		// abort – it is better to run without file logging than not at all.
@@ -68,7 +68,7 @@ func main() {
 	}
 	defer log.Close()
 
-	log.Infof("adrotator starting – version built %s", buildDate())
+	log.Infof("sharedAccountRotate starting – version built %s", buildDate())
 
 	// ── Default username to the machine hostname ────────────────────────────────────────────
 	// The AD user account and computer object share the same name, so the
@@ -143,10 +143,10 @@ func buildDate() string {
 // caught immediately rather than after the first sleep period.
 func init() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `adrotator – AD password rotation Windows service
+		fmt.Fprintf(os.Stderr, `sharedAccountRotate – AD password rotation Windows service
 
 Usage:
-  adrotator.exe [flags]
+  sharedAccountRotate.exe [flags]
 
 Flags:
 `)
@@ -154,13 +154,13 @@ Flags:
 		fmt.Fprintf(os.Stderr, `
 Examples:
   # Install as a Windows service
-  adrotator.exe --service install --domain corp.example.com --username KIOSK01 --days 30
+  sharedAccountRotate.exe --service install --domain corp.example.com --days 30
 
   # Dev/test run – rotate immediately, no idle check
-  adrotator.exe --dev --domain corp.example.com --username KIOSK01
+  sharedAccountRotate.exe --dev --domain corp.example.com
 
   # Normal foreground run
-  adrotator.exe --domain corp.example.com --username KIOSK01 --days 14 --idle-hours 3
+  sharedAccountRotate.exe --domain corp.example.com --days 14 --idle-hours 3
 `)
 	}
 

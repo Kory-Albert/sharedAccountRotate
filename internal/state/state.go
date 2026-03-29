@@ -4,7 +4,7 @@
 // The file is written atomically (write to a temp file, then rename) to avoid
 // corruption if the service is killed mid-write.
 //
-// Location: C:\Windows\Temp\adrotator_state.json
+// Location: C:\Windows\Temp\sharedAccountRotate_state.json
 // Permissions: created 0600 (owner-read/write only, enforced via Windows ACL
 // when possible). The file contains no secrets – only the timestamp.
 
@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const defaultStatePath = `C:\Windows\Temp\adrotator_state.json`
+const defaultStatePath = `C:\Windows\Temp\sharedAccountRotate_state.json`
 
 // State holds the persisted rotation history.
 type State struct {
@@ -64,7 +64,7 @@ func (m *Manager) Save(s *State) error {
 
 	// Write to a sibling temp file then rename for atomicity.
 	dir := filepath.Dir(m.path)
-	tmp, err := os.CreateTemp(dir, "adrotator_state_*.tmp")
+	tmp, err := os.CreateTemp(dir, "sharedAccountRotate_state_*.tmp")
 	if err != nil {
 		return fmt.Errorf("state temp create: %w", err)
 	}
