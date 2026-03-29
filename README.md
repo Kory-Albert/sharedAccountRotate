@@ -107,7 +107,7 @@ sharedAccountRotate.exe --domain corp.example.com --days 7
 
 The `service` package is the orchestration layer. It implements the service lifecycle and the main rotation loop:
 
-1. **State Check**: Load `C:\Windows\Temp\sharedAccountRotate_state.json` and check if rotation is due
+1. **State Check**: Load `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json` and check if rotation is due
 2. **Idle Wait**: Poll `GetLastInputInfo` until the workstation has been idle for `--idle-hours`
 3. **Rotation**: Generate password → Update AD → Store in LSA → Verify → Logoff session
 4. **Persist**: Save success timestamp for next interval calculation
@@ -147,7 +147,7 @@ Generates cryptographically secure passwords using `crypto/rand`:
 
 Simple JSON-based persistence for rotation tracking:
 
-- **Location**: `C:\Windows\Temp\sharedAccountRotate_state.json`
+- **Location**: `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json`
 - **Content**: Last rotation timestamp, rotation count
 - **Behavior**: Creates fresh state if file is missing or corrupt
 
@@ -194,8 +194,8 @@ go test ./...
 
 | File | Purpose |
 |------|---------|
-| `C:\Windows\Temp\sharedAccountRotate.log` | Service logs |
-| `C:\Windows\Temp\sharedAccountRotate_state.json` | Rotation state |
+| `C:\Program Files\sharedAccountRotate\sharedAccountRotate.log` | Service logs |
+| `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json` | Rotation state |
 | `C:\Program Files\sharedAccountRotate\sharedAccountRotate.exe` | Installed binary |
 | `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` | Auto-logon registry |
 
@@ -213,7 +213,7 @@ go test ./...
 
 ## 📝 License
 
-[Your license here]
+This project is licensed under the MIT License - see the [LICENSE](https://opensource.org/license/MIT) for details.
 
 ---
 

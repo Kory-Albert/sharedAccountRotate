@@ -8,7 +8,7 @@
 //   5. Verifies both writes succeeded
 //   6. Signs the current session out so the machine auto-logs back in
 //
-// All events are written to stdout AND to C:\Windows\Temp\sharedAccountRotate.log.
+// All events are written to stdout AND to C:\Program Files\sharedAccountRotate\sharedAccountRotate.log.
 // Passwords are never written to any log or output.
 
 package main
@@ -63,7 +63,7 @@ func main() {
 
 	// Initialise the dual logger (stdout + file) as early as possible so every
 	// subsequent message is captured.
-	log, err := logger.New(`C:\Windows\Temp\sharedAccountRotate.log`)
+	log, err := logger.New(`C:\Program Files\sharedAccountRotate\sharedAccountRotate.log`)
 	if err != nil {
 		// Fall back to stderr-only if the log file cannot be opened; do not
 		// abort – it is better to run without file logging than not at all.

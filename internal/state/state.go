@@ -4,7 +4,7 @@
 // The file is written atomically (write to a temp file, then rename) to avoid
 // corruption if the service is killed mid-write.
 //
-// Location: C:\Windows\Temp\sharedAccountRotate_state.json
+// Location: C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json
 // Permissions: created 0600 (owner-read/write only, enforced via Windows ACL
 // when possible). The file contains no secrets – only the timestamp.
 
@@ -18,7 +18,8 @@ import (
 	"time"
 )
 
-const defaultStatePath = `C:\Windows\Temp\sharedAccountRotate_state.json`
+const defaultStateDir = `C:\Program Files\sharedAccountRotate`
+const defaultStatePath = defaultStateDir + `\sharedAccountRotate_state.json`
 
 // State holds the persisted rotation history.
 type State struct {
@@ -57,13 +58,18 @@ func (m *Manager) Load() (*State, error) {
 
 // Save writes the state atomically to disk.
 func (m *Manager) Save(s *State) error {
+	// Ensure the state directory exists
+	dir := filepath.Dir(m.path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("state create directory %s: %w", dir, err)
+	}
+
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("state marshal: %w", err)
 	}
 
 	// Write to a sibling temp file then rename for atomicity.
-	dir := filepath.Dir(m.path)
 	tmp, err := os.CreateTemp(dir, "sharedAccountRotate_state_*.tmp")
 	if err != nil {
 		return fmt.Errorf("state temp create: %w", err)
