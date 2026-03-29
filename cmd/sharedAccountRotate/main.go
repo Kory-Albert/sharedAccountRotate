@@ -8,7 +8,10 @@
 //   5. Verifies both writes succeeded
 //   6. Signs the current session out so the machine auto-logs back in
 //
-// All events are written to stdout AND to C:\Program Files\sharedAccountRotate\sharedAccountRotate.log.
+// All events are written to stdout AND to a log file. When running as a Windows
+// Service (--service run) the log is written to the installed Program Files
+// directory. In all other modes (install, dev, foreground) it falls back to
+// C:\Windows\Temp so the directory is guaranteed to exist.
 // Passwords are never written to any log or output.
 
 package main
@@ -63,7 +66,7 @@ func main() {
 
 	// Initialise the dual logger (stdout + file) as early as possible so every
 	// subsequent message is captured.
-	log, err := logger.New(`C:\Program Files\sharedAccountRotate\sharedAccountRotate.log`)
+	log, err := logger.New(logFilePath(*flagSvcAction))
 	if err != nil {
 		// Fall back to stderr-only if the log file cannot be opened; do not
 		// abort – it is better to run without file logging than not at all.
@@ -133,6 +136,23 @@ func main() {
 	if err := svc.Run(); err != nil {
 		log.Fatalf("rotation loop exited with error: %v", err)
 	}
+}
+
+// logFilePath returns the path to write the log file to.
+//
+// Only "--service run" (the SCM start verb) is guaranteed to have the Program
+// Files install directory already present — that directory is created by
+// "--service install" before the service is ever started. Every other execution
+// mode (install, start, stop, remove, dev, foreground) may run before the
+// directory exists, so they fall back to Windows\Temp which is always present.
+func logFilePath(svcAction string) string {
+	const installed = `C:\Program Files\sharedAccountRotate\sharedAccountRotate.log`
+	const fallback  = `C:\Windows\Temp\sharedAccountRotate.log`
+
+	if svcAction == "run" {
+		return installed
+	}
+	return fallback
 }
 
 // buildDate returns the build timestamp embedded at compile time via -ldflags,

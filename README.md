@@ -194,7 +194,8 @@ go test ./...
 
 | File | Purpose |
 |------|---------|
-| `C:\Program Files\sharedAccountRotate\sharedAccountRotate.log` | Service logs |
+| `C:\Program Files\sharedAccountRotate\sharedAccountRotate.log` | Service logs (when running as SCM service) |
+| `C:\Windows\Temp\sharedAccountRotate.log` | Service logs (install, dev, and foreground modes) |
 | `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json` | Rotation state |
 | `C:\Program Files\sharedAccountRotate\sharedAccountRotate.exe` | Installed binary |
 | `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` | Auto-logon registry |
