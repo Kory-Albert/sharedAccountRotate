@@ -50,6 +50,10 @@ var (
 	// permission on this user object. The computer name and username are
 	// expected to be identical (e.g. both "KIOSK01").
 	flagUsername = flag.String("username", "", "AD username to rotate (defaults to machine hostname)")
+
+	// Log level controls which messages are written to the log file.
+	// Valid values: DEBUG, INFO, WARN, ERROR (default: INFO)
+	flagLogLevel = flag.String("loglevel", "INFO", "Log level: DEBUG | INFO | WARN | ERROR")
 )
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -67,6 +71,9 @@ func main() {
 		log = logger.NewStdoutOnly()
 	}
 	defer log.Close()
+
+	// Set the configured log level before any log messages are written.
+	log.SetLevel(logger.ParseLevel(*flagLogLevel))
 
 	log.Infof("sharedAccountRotate starting – version built %s", buildDate())
 
@@ -161,6 +168,17 @@ Examples:
 
   # Normal foreground run
   sharedAccountRotate.exe --domain corp.example.com --days 14 --idle-hours 3
+
+  # Logging
+  Options:
+    --loglevel <DEBUG|INFO|WARN|ERROR>
+
+  sharedAccountRotate.exe --loglevel DEBUG --dev --domain corp.example.com
+
+  # Service control actions
+  sharedAccountRotate.exe --service start
+  sharedAccountRotate.exe --service stop
+  sharedAccountRotate.exe --service remove
 `)
 	}
 
