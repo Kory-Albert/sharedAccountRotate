@@ -60,6 +60,7 @@ That's it! The service will now rotate the password every 30 days when the works
 | `--days` | `30` | Days between password rotations |
 | `--idle-hours` | `2.0` | Hours of idle time required before rotation |
 | `--domain` | *required* | Your AD domain (e.g., `corp.example.com`) |
+| `--ldap-server` | `nil` | LDAP server address; if not specified, uses `--domain` |
 | `--username` | *hostname* | AD account to rotate (defaults to machine name) |
 | `--loglevel` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--dev` | `false` | Skip all checks, rotate immediately (useful for testing) |
