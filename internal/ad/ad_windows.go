@@ -1,11 +1,12 @@
 // Package ad handles all Active Directory operations using pure Go LDAP over
 // TLS (LDAPS port 636). No PowerShell is invoked.
 //
-// Authentication: The service runs as SYSTEM. NTLMBind with empty credentials
-// causes go-ntlmssp to negotiate NTLM using the machine account process token.
+// Authentication: The service runs as SYSTEM. GSSAPIBind with SSPI client
+// uses the machine account process token for authentication.
 // The machine account must have delegated "Reset Password" on the target user.
 //
 // LDAP library: github.com/go-ldap/ldap/v3
+// GSSAPI package: github.com/go-ldap/ldap/v3/gssapi
 
 //go:build windows
 
@@ -18,6 +19,7 @@ import (
 	"unicode/utf16"
 
 	ldap "github.com/go-ldap/ldap/v3"
+	"github.com/go-ldap/ldap/v3/gssapi"
 
 	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
 )
@@ -50,6 +52,7 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 
 	conn, err := c.connect()
 	if err != nil {
+		c.log.Errorf("AD: connection failed: %v", err)
 		return fmt.Errorf("AD connect: %w", err)
 	}
 	defer func() {
@@ -57,15 +60,33 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 		c.log.Info("AD: connection closed")
 	}()
 
-	// ── NTLM bind with empty credentials ─────────────────────────────────────
-	// NTLMBind("domain", "", "") triggers NTLM negotiation using the current
-	// Windows process token (SYSTEM/machine account). No plaintext password
-	// is needed or transmitted.
-	c.log.Info("AD: binding with NTLM (machine account credential)")
-	if err := conn.NTLMBind(c.domain, "", ""); err != nil {
-		return fmt.Errorf("AD NTLM bind: %w – ensure machine account has delegated Reset Password on the user object and can reach DC on port %d", err, c.port)
+	// ── GSSAPI/SSPI bind using machine account process token ──────────────────
+	// GSSAPIBind with an SSPI client uses Windows integrated authentication.
+	// When running as SYSTEM, this authenticates as the machine account (HOSTNAME$).
+	// The SPN format is "ldap/hostname" (e.g., "ldap/tfhd-dc1.tfhd.ad").
+	c.log.Info("AD: binding with GSSAPI/SSPI (machine account credential)")
+
+	sspiClient, err := gssapi.NewSSPIClient()
+	if err != nil {
+		c.log.Errorf("AD: failed to create SSPI client: %v", err)
+		return fmt.Errorf("AD SSPI client creation: %w", err)
 	}
-	c.log.Info("AD: NTLM bind successful")
+	defer sspiClient.Close()
+
+	// SPN format: ldap/hostname (must match the DC's host name for Kerberos)
+	spn := "ldap/" + c.server
+	c.log.Debugf("AD: GSSAPI bind with SPN=%q", spn)
+
+	if err := conn.GSSAPIBind(sspiClient, spn, ""); err != nil {
+		c.log.Errorf("AD: GSSAPI bind failed: %v", err)
+		c.log.Error("AD: Troubleshooting checklist:")
+		c.log.Error("  1. Verify service is running as SYSTEM (required for machine account auth)")
+		c.log.Error("  2. Verify machine account can reach DC on port 636 (telnet <dc> 636)")
+		c.log.Error("  3. Verify machine account has 'Reset Password' delegated on target user")
+		c.log.Error("  4. Check DC event logs for authentication failures from this machine")
+		return fmt.Errorf("AD GSSAPI bind: %w – ensure machine account has delegated Reset Password on the user object and can reach DC on port %d", err, c.port)
+	}
+	c.log.Info("AD: GSSAPI/SSPI bind successful")
 
 	// ── Find user DN ──────────────────────────────────────────────────────────
 	c.log.Infof("AD: searching for user %q in %s", username, c.baseDN)
@@ -82,14 +103,31 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 	}
 	defer zeroBytes(encoded)
 
+	// Log password length and character class counts (not the password itself)
+	upperCount, lowerCount, digitCount, specialCount := countCharClasses(newPassword)
+	c.log.Debugf("AD: password length=%d (upper=%d lower=%d digit=%d special=%d), encoded=%d bytes",
+		len(newPassword), upperCount, lowerCount, digitCount, specialCount, len(encoded))
+
+	if len(encoded) == 0 {
+		c.log.Error("AD: ERROR - encoded password is empty!")
+		return fmt.Errorf("AD modify unicodePwd: encoded password is empty")
+	}
+
 	// ── Modify unicodePwd ─────────────────────────────────────────────────────
-	// Active Directory requires a DELETE+ADD operation for password changes.
-	// For a password reset (using delegated machine credentials), we DELETE
-	// with an empty value and ADD the new password in a single atomic modify.
-	c.log.Info("AD: sending unicodePwd modify request (delete+add)")
+	// When the caller holds "Reset Password" (not "Change Password"), AD expects
+	// a Replace operation rather than Delete+Add. Delete+Add is for self-changes
+	// where the old password must be supplied in the Delete value. With delegated
+	// Reset Password rights, Replace atomically overwrites unicodePwd regardless
+	// of the current value — no knowledge of the old password required.
+	//
+	// unicodePwd is a binary attribute. Go strings are byte sequences (not
+	// UTF-8 encoded on assignment), so string(encoded) preserves the raw
+	// UTF-16LE bytes exactly as-is when go-ldap writes them onto the wire.
+	c.log.Info("AD: sending unicodePwd replace request")
 	modReq := ldap.NewModifyRequest(dn, nil)
-	modReq.Delete("unicodePwd", []string{})
-	modReq.Add("unicodePwd", []string{string(encoded)})
+	modReq.Replace("unicodePwd", []string{string(encoded)})
+
+	c.log.Debugf("AD: encoded password length for LDAP: %d", len(encoded))
 	if err := conn.Modify(modReq); err != nil {
 		return fmt.Errorf("AD modify unicodePwd: %w", err)
 	}
@@ -166,12 +204,14 @@ func encodePassword(pw []byte) ([]byte, error) {
 	quoted = append(quoted, '"')
 	quoted = append(quoted, pw...)
 	quoted = append(quoted, '"')
+
 	runes := []rune(string(quoted))
 	utf16Chars := utf16.Encode(runes)
 	buf := make([]byte, len(utf16Chars)*2)
 	for i, ch := range utf16Chars {
 		binary.LittleEndian.PutUint16(buf[i*2:], ch)
 	}
+
 	return buf, nil
 }
 
@@ -200,4 +240,21 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// countCharClasses counts characters in each class for debug logging.
+func countCharClasses(pw []byte) (upper, lower, digit, special int) {
+	for _, c := range pw {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			upper++
+		case c >= 'a' && c <= 'z':
+			lower++
+		case c >= '0' && c <= '9':
+			digit++
+		default:
+			special++
+		}
+	}
+	return
 }
