@@ -474,6 +474,9 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 		}
 
 		s.cfg.Log.Info("rotation: ✓ complete – waiting for next scheduled rotation")
+		if s.cfg.DevMode {
+			os.Exit(0)
+		}
 
 		// Immediately check for stop before sleeping.
 		select {
