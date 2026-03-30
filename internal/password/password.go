@@ -25,10 +25,11 @@ const (
 
 	// Character classes – carefully chosen to avoid characters that break
 	// LDAP distinguished names, registry strings, or command-line quoting.
+	// Special set is restricted to characters that pass typical AD password filters.
 	upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ"        // no I, O (ambiguous visually)
 	lower   = "abcdefghjkmnpqrstuvwxyz"          // no i, l, o (ambiguous)
 	digits  = "23456789"                          // no 0, 1 (ambiguous)
-	special = "!@#$%^&*()-_=+[]{}|;:,.<>?"       // no quotes, backtick, slash
+	special = "!@#$%^&*()-_=+[]{}:,.<>?"         // no quotes, backtick, slash, pipe, semicolon
 	all     = upper + lower + digits + special
 )
 
