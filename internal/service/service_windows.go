@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
@@ -138,28 +139,22 @@ func installService(cfg *Config) error {
 	}
 	defer m.Disconnect()
 
-	// Build the command line that the SCM will use to start the service.
-	// The exe path must be double-quoted because it contains spaces
-	// ("C:\Program Files\..."). The SCM passes lpBinaryPathName verbatim to
-	// CreateProcessW, which applies the same tokenisation rules as the Windows
-	// command line — an unquoted path with spaces will be split on the first
-	// space, causing the service to fail to start.
-	// Domain, ldap-server, and username are also quoted in case they contain
-	// spaces (e.g. NetBIOS domain names).
-	args := fmt.Sprintf(
-		"--service run --domain %q --ldap-server %q --ldap-port %d --username %q --days %d --idle-hours %.2f",
-		cfg.Domain, cfg.LDAPServer, cfg.LDAPPort, cfg.Username, cfg.RotationDays, cfg.IdleHours,
+	// CreateService properly handles argument escaping. Pass the exe path
+	// separately from the command-line arguments.
+	s, err := m.CreateService(
+		serviceName, destPath, mgr.Config{
+			DisplayName: serviceDisplayName,
+			Description: serviceDescription,
+			StartType:   mgr.StartAutomatic,
+		},
+		"--service", "run",
+		"--domain", cfg.Domain,
+		"--ldap-server", cfg.LDAPServer,
+		"--ldap-port", fmt.Sprintf("%d", cfg.LDAPPort),
+		"--username", cfg.Username,
+		"--days", fmt.Sprintf("%d", cfg.RotationDays),
+		"--idle-hours", fmt.Sprintf("%.2f", cfg.IdleHours),
 	)
-	// Wrap the exe path in double quotes so the SCM correctly identifies it as
-	// the binary even though "Program Files" contains a space.
-	binPath := fmt.Sprintf("%q %s", destPath, args)
-
-	s, err := m.CreateService(serviceName, binPath, mgr.Config{
-		DisplayName: serviceDisplayName,
-		Description: serviceDescription,
-		StartType:   mgr.StartAutomatic,
-		ServiceType: 1, // SERVICE_WIN32_OWN_PROCESS
-	})
 	if err != nil {
 		return fmt.Errorf("service install – create: %w", err)
 	}
@@ -278,6 +273,14 @@ func runServiceHandler(cfg *Config) error {
 // Execute is called by the SCM. It starts the rotation goroutine and handles
 // SCM control requests (Stop, Pause, etc.).
 func (ws *windowsService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (svcSpecificExitCode bool, errno uint32) {
+	// Initialize COM on the service thread. Windows services run in Session 0
+	// which does not have COM pre-initialized. Several Windows APIs used during
+	// TLS certificate validation (crypt32/cert validation paths) and Kerberos
+	// SSP indirectly invoke COM and will fail with 0x8000FFFF if it is not
+	// initialized.
+	windows.CoInitializeEx(0, windows.COINIT_MULTITHREADED)
+	defer windows.CoUninitialize()
+
 	changes <- svc.Status{State: svc.StartPending}
 
 	// Start the rotation loop in a goroutine so we can also service SCM cmds.
