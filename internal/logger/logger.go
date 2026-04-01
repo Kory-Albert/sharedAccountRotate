@@ -56,21 +56,43 @@ type Logger struct {
 }
 
 // New opens (or creates / appends to) the given file path and returns a Logger
-// that writes to both that file and os.Stdout.
+// that writes to both the file and os.Stdout.
 func New(filePath string) (*Logger, error) {
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("logger: open %s: %w", filePath, err)
 	}
+	// MultiWriter writes to stdout and file sequentially. In a Windows service
+	// context, os.Stdout is a null handle attached to the session — writes
+	// succeed but consume bandwidth. This is acceptable because it lets devs
+	// see output during --dev / --foreground testing.
 	mw := io.MultiWriter(os.Stdout, f)
 	impl := log.New(mw, "", log.Ldate|log.Ltime|log.LUTC)
 	return &Logger{impl: impl, file: f, level: INFO}, nil
 }
 
+// NewFileOnly returns a Logger that writes only to the given file path,
+// skipping os.Stdout. Use this for Windows services where stdout is not visible.
+func NewFileOnly(filePath string) (*Logger, error) {
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("logger: open %s: %w", filePath, err)
+	}
+	impl := log.New(f, "", log.Ldate|log.Ltime|log.LUTC)
+	return &Logger{impl: impl, file: f, level: INFO}, nil
+}
+
 // NewStdoutOnly returns a Logger that only writes to stdout (used as a fallback
-// when the log file cannot be opened).
+// in dev mode).
 func NewStdoutOnly() *Logger {
 	impl := log.New(os.Stdout, "", log.Ldate|log.Ltime|log.LUTC)
+	return &Logger{impl: impl, level: INFO}
+}
+
+// NewStderrOnly returns a Logger that only writes to stderr (used as a fallback
+// when the log file cannot be opened).
+func NewStderrOnly() *Logger {
+	impl := log.New(os.Stderr, "", log.Ldate|log.Ltime|log.LUTC)
 	return &Logger{impl: impl, level: INFO}
 }
 

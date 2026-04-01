@@ -66,12 +66,21 @@ func main() {
 
 	// Initialise the dual logger (stdout + file) as early as possible so every
 	// subsequent message is captured.
-	log, err := logger.New(logFilePath(*flagSvcAction))
+	// For "--service run" (SCM-launched), use file-only because os.Stdout is a
+	// null handle in Session 0.  In dev/install/foreground modes, dual logging
+	// allows devs to see output on the terminal while it is also written to a file.
+	var log *logger.Logger
+	var err error
+	if *flagSvcAction == "run" {
+		log, err = logger.NewFileOnly(logFilePath(*flagSvcAction))
+	} else {
+		log, err = logger.New(logFilePath(*flagSvcAction))
+	}
 	if err != nil {
 		// Fall back to stderr-only if the log file cannot be opened; do not
 		// abort – it is better to run without file logging than not at all.
-		fmt.Fprintf(os.Stderr, "[WARN] could not open log file: %v – logging to stdout only\n", err)
-		log = logger.NewStdoutOnly()
+		fmt.Fprintf(os.Stderr, "[WARN] could not open log file: %v – logging to stderr only\n", err)
+		log = logger.NewStderrOnly()
 	}
 	defer log.Close()
 
@@ -79,6 +88,22 @@ func main() {
 	log.SetLevel(logger.ParseLevel(*flagLogLevel))
 
 	log.Infof("sharedAccountRotate starting – version built %s", buildDate())
+
+	// ── Early dispatch for config-free service actions ──────────────────────────
+	// start/stop/remove only talk to the SCM and don't need domain, username, or
+	// LDAP config. Dispatch them before the hostname/domain validation below.
+	if *flagSvcAction == "remove" || *flagSvcAction == "start" || *flagSvcAction == "stop" {
+		if err := service.HandleServiceAction(&service.Config{
+			Log:       log,
+			SvcAction: *flagSvcAction,
+		}); err != nil {
+			log.Fatalf("service action %q failed: %v", *flagSvcAction, err)
+		}
+		return
+	}
+
+	// ── Log the file path for debugging ─────────────────────────────────────────
+	log.Infof("service: log file path: %s", logFilePath(*flagSvcAction))
 
 	// ── Default username to the machine hostname ────────────────────────────────────────────
 	// The AD user account and computer object share the same name, so the
@@ -93,9 +118,7 @@ func main() {
 	}
 
 	// ── Validate required flags ───────────────────────────────────────────────
-	// --domain is required for all modes except service removal (which needs no config).
-	// --username defaults to hostname above, so it never needs validation.
-	if *flagDomain == "" && *flagSvcAction != "remove" {
+	if *flagDomain == "" {
 		log.Fatalf("--domain is required")
 	}
 
