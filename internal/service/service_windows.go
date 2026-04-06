@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -37,7 +38,6 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/activity"
 	"github.com/sharedAccountRotate/sharedAccountRotate/internal/ad"
 	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
 	"github.com/sharedAccountRotate/sharedAccountRotate/internal/lsa"
@@ -53,9 +53,6 @@ const (
 
 	// How often to poll the state file when a rotation is not yet due.
 	duePollInterval = 1 * time.Hour
-
-	// How often to check idle time while waiting for the workstation to go idle.
-	idlePollInterval = 5 * time.Minute
 
 	// Password length (characters).
 	passwordLength = 32
@@ -113,10 +110,14 @@ func installService(cfg *Config) error {
 		return fmt.Errorf("service install – resolve executable path: %w", err)
 	}
 
-	// Ensure installation directory exists
+	// Ensure installation directories exist
 	cfg.Log.Infof("service: creating installation directory %s", installDir)
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return fmt.Errorf("service install – create directory: %w", err)
+	}
+	cfg.Log.Infof("service: creating data directory %s", state.DataDir())
+	if err := os.MkdirAll(state.DataDir(), 0755); err != nil {
+		return fmt.Errorf("service install – create data directory: %w", err)
 	}
 
 	// Copy binary to installation directory
@@ -160,6 +161,13 @@ func installService(cfg *Config) error {
 	}
 	defer s.Close()
 
+	// Create a startup shortcut (.lnk) in the user's Startup folder so the
+	// monitor helper runs each time the user logs on. The monitor tracks
+	// idle status to the shared state file.
+	if err := installStartupShortcut(destPath); err != nil {
+		cfg.Log.Errorf("service: could not install startup shortcut: %v (non-fatal)", err)
+	}
+
 	cfg.Log.Infof("service: %q installed successfully (StartType=Automatic)", serviceName)
 	return nil
 }
@@ -193,6 +201,39 @@ func copyFile(src, dst string) error {
 
 	// Ensure data is written to disk
 	return destFile.Sync()
+}
+
+// installStartupShortcut creates a .lnk in the all-users Startup folder
+// so the monitor runs for whichever user auto-logs in. Uses the common
+// startup folder (C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp).
+func installStartupShortcut(exePath string) error {
+	// Common Startup folder – applies to all users, including the auto-logon account.
+	startupDir := `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp`
+	shortcutPath := filepath.Join(startupDir, "AccountRotateMonitor.lnk")
+
+	// PowerShell script to create a COM-based .lnk file
+	script := fmt.Sprintf(`
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut("%s")
+$Shortcut.TargetPath = "%s"
+$Shortcut.Arguments = "--monitor"
+$Shortcut.WorkingDirectory = (Split-Path -Parent "%s")
+$Shortcut.Description = "Shared Account Rotate - Idle Monitor"
+$Shortcut.WindowStyle = 7
+$Shortcut.Save()
+`, shortcutPath, exePath, exePath)
+
+	cmd := exec.Command("powershell", "-Command", script)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create startup shortcut: %w (output: %s)", err, string(output))
+	}
+
+	if _, err := os.Stat(shortcutPath); err != nil {
+		return fmt.Errorf("verify startup shortcut: %w", err)
+	}
+
+	return nil
 }
 
 // removeService deletes the service from the SCM.
@@ -334,6 +375,7 @@ type Service struct {
 	lsaCli  *lsa.Client
 	sessCli *session.Client
 	states  *state.Manager
+	idle    *state.IdleMonitor
 }
 
 // New constructs a Service with all dependencies wired up.
@@ -344,6 +386,7 @@ func New(cfg *Config) *Service {
 		lsaCli:  lsa.New(cfg.Log),
 		sessCli: session.New(cfg.Log),
 		states:  state.New(),
+		idle:    state.NewIdleMonitor(),
 	}
 }
 
@@ -397,30 +440,44 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 
 		s.cfg.Log.Info("rotation: rotation is due – beginning pre-rotation checks")
 
-		// ── Phase 2: Wait for workstation idle ────────────────────────────────
+		// ── Phase 2: Wait for workstation idle (reported by monitor via state file) ─
 		if !s.cfg.DevMode {
 			minIdle := time.Duration(s.cfg.IdleHours * float64(time.Hour))
-			s.cfg.Log.Infof("rotation: waiting for %.1f hours of idle time", s.cfg.IdleHours)
+			s.cfg.Log.Infof("rotation: waiting for %.1f hours of idle (monitor report)", s.cfg.IdleHours)
 
-			// Run idle polling in a loop so we can also honour a stop signal.
+			// Poll the monitor's dedicated idle file every 5 seconds. The monitor
+			// writes is_idle=true when GetLastInputInfo reports the session is idle.
+			// We wait until is_idle is true and the session has been continuously
+			// idle for at least --idle-hours.
+			consecutiveIdleStart := time.Time{}
 		idleWait:
 			for {
-				idle, err := activity.IdleTime()
-				if err != nil {
-					s.cfg.Log.Errorf("rotation: idle check error: %v", err)
-				} else if idle >= minIdle {
-					s.cfg.Log.Infof("rotation: idle threshold met (%v)", idle.Round(time.Second))
-					break idleWait
+				idleStatus := s.idle.LoadIdle()
+				if idleStatus.IsIdle {
+					if consecutiveIdleStart.IsZero() {
+						consecutiveIdleStart = idleStatus.IdleUpdated
+						s.cfg.Log.Info("rotation: session reported as idle by monitor")
+					}
+					elapsed := time.Since(consecutiveIdleStart)
+					if elapsed >= minIdle {
+						s.cfg.Log.Infof("rotation: idle threshold met (%.1f hours)", s.cfg.IdleHours)
+						break idleWait
+					}
+					s.cfg.Log.Infof("rotation: session idle %v of %.1fh required",
+						elapsed.Round(time.Second), s.cfg.IdleHours)
 				} else {
-					remaining := minIdle - idle
-					s.cfg.Log.Infof("rotation: idle=%v, need %v more", idle.Round(time.Second), remaining.Round(time.Second))
+					if !consecutiveIdleStart.IsZero() {
+						s.cfg.Log.Infof("rotation: session became active – resetting idle timer (was idle %v)",
+							time.Since(consecutiveIdleStart).Round(time.Second))
+						consecutiveIdleStart = time.Time{}
+					}
 				}
 
 				select {
 				case <-stop:
 					s.cfg.Log.Info("rotation: stop signal received during idle wait – exiting")
 					return nil
-				case <-time.After(idlePollInterval):
+				case <-time.After(5 * time.Second):
 				}
 			}
 		} else {

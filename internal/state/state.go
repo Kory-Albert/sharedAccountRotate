@@ -4,7 +4,7 @@
 // The file is written atomically (write to a temp file, then rename) to avoid
 // corruption if the service is killed mid-write.
 //
-// Location: C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json
+// Location: C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json
 // Permissions: created 0600 (owner-read/write only, enforced via Windows ACL
 // when possible). The file contains no secrets – only the timestamp.
 //
@@ -23,8 +23,30 @@ import (
 	"time"
 )
 
-const defaultStateDir = `C:\Program Files\sharedAccountRotate`
+const defaultStateDir = `C:\ProgramData\sharedAccountRotate`
 const defaultStatePath = defaultStateDir + `\sharedAccountRotate_state.json`
+const defaultIdlePath  = defaultStateDir + `\sharedAccountRotate_idle.json`
+const monitorLogPath   = defaultStateDir + `\sharedAccountRotate_monitor.log`
+
+// DataDir returns the root directory used for all persistent files.
+func DataDir() string {
+	return defaultStateDir
+}
+
+// LogPath returns the default log file path.
+func LogPath() string {
+	return defaultStateDir + `\sharedAccountRotate.log`
+}
+
+// IdlePath returns the idle status file path (written by monitor only).
+func IdlePath() string {
+	return defaultIdlePath
+}
+
+// MonitorLogPath returns the monitor-specific log file path.
+func MonitorLogPath() string {
+	return monitorLogPath
+}
 
 // State holds the persisted rotation history.
 type State struct {
@@ -38,6 +60,13 @@ type State struct {
 	// manually resolves the mismatch and clears this flag (set to false and
 	// save the file, or delete the state file entirely to reset).
 	OutOfSync bool `json:"out_of_sync,omitempty"`
+}
+
+// IdleStatus holds the monitor-reported idle status (written by monitor, read by service).
+type IdleStatus struct {
+	IsIdle        bool      `json:"is_idle"`                  // True if user session is idle
+	IdleUpdated   time.Time `json:"idle_updated"`             // When idle status was last updated
+	IdleDuration  float64   `json:"idle_duration_seconds,omitempty"` // Current idle time in seconds
 }
 
 // Manager reads and writes the state file.
@@ -139,4 +168,28 @@ func (m *Manager) MarkSuccess(s *State) {
 // The service will refuse further rotations until this is manually cleared.
 func (m *Manager) MarkOutOfSync(s *State) {
 	s.OutOfSync = true
+}
+
+// IdleMonitor reads the idle status file written by the monitor helper.
+type IdleMonitor struct {
+	path string
+}
+
+// NewIdleMonitor returns an IdleMonitor that reads the monitor's file.
+func NewIdleMonitor() *IdleMonitor {
+	return &IdleMonitor{path: defaultIdlePath}
+}
+
+// LoadIdle reads the idle status file, returning a zero-value (not idle) if
+// the file does not exist or cannot be read.
+func (m *IdleMonitor) LoadIdle() *IdleStatus {
+	data, err := os.ReadFile(m.path)
+	if err != nil {
+		return &IdleStatus{} // file missing or unreadable – treat as not idle
+	}
+	var s IdleStatus
+	if err := json.Unmarshal(data, &s); err != nil {
+		return &IdleStatus{} // corrupt file, treat as not idle
+	}
+	return &s
 }
