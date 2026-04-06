@@ -26,10 +26,12 @@ No PowerShell. No manual intervention. No "why do we have hundreds of passwords 
    sharedAccountRotate.exe --service install --domain corp.example.com --days 30
    ```
    This automatically:
-   - Creates `C:\Program Files\sharedAccountRotate\`
-   - Copies the binary there
+   - Creates `C:\Program Files\sharedAccountRotate\` (binary)
+   - Creates `C:\ProgramData\sharedAccountRotate\` (state and logs)
+   - Copies the binary to Program Files
    - Registers the service with Windows
    - Sets it to start automatically
+   - Installs a Startup folder shortcut for the idle monitor
 
 3. **Clean up**: Delete the original binary from Downloads—it's now living happily in Program Files
 
@@ -39,6 +41,8 @@ No PowerShell. No manual intervention. No "why do we have hundreds of passwords 
    ```
 
 That's it! The service will now rotate the password every 30 days when the workstation has been idle for 2 hours.
+
+> **Note**: The first time a user logs on after installation, the idle monitor helper (launched from the Startup folder shortcut) will start automatically. The service detects idle status from the monitor's status file, since `GetLastInputInfo` doesn't work in Session 0.
 
 ---
 
@@ -64,6 +68,7 @@ That's it! The service will now rotate the password every 30 days when the works
 | `--username` | *hostname* | AD account to rotate (defaults to machine name) |
 | `--loglevel` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `--dev` | `false` | Skip all checks, rotate immediately (useful for testing) |
+| `--monitor` | `false` | Idle monitor mode—polls `GetLastInputInfo` and writes idle status (launched via Startup shortcut) |
 
 ### Examples
 
@@ -76,6 +81,9 @@ sharedAccountRotate.exe --dev --domain corp.example.com --loglevel DEBUG
 
 # Run in foreground (for debugging or development)
 sharedAccountRotate.exe --domain corp.example.com --days 7
+
+# Run the idle monitor manually (for testing the monitor)
+sharedAccountRotate.exe --monitor --loglevel DEBUG
 ```
 
 ---
@@ -96,7 +104,7 @@ sharedAccountRotate.exe --domain corp.example.com --days 7
 │   ├── lsa/                      # LSA secrets + Winlogon registry
 │   ├── session/                  # Windows session enumeration/logoff
 │   ├── password/                 # Cryptographically secure password generation
-│   ├── state/                    # Persistent state management (JSON)
+│   ├── state/                    # Persistent state management (JSON) + idle status
 │   ├── logger/                   # Dual-output logging (stdout + file)
 │   └── service/                  # SCM integration + rotation orchestration
 └── go.mod
@@ -108,14 +116,26 @@ sharedAccountRotate.exe --domain corp.example.com --days 7
 
 The `service` package is the orchestration layer. It implements the service lifecycle and the main rotation loop:
 
-1. **State Check**: Load `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json` and check if rotation is due
-2. **Idle Wait**: Poll `GetLastInputInfo` until the workstation has been idle for `--idle-hours`
-3. **Rotation**: Generate password → Update AD → Store in LSA → Verify → Logoff session
+1. **State Check**: Load `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json` and check if rotation is due
+2. **Idle Wait**: Read the monitor's idle status from `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json` and wait until `is_idle=true` and the session has been continuously idle for `--idle-hours`
+3. **Rotation**: Generate password → Store in LSA → Update AD → Verify → Logoff session
 4. **Persist**: Save success timestamp for next interval calculation
 
 The service can run in two modes:
-- **Service mode**: Runs under SCM (Windows Service Control Manager)
+- **Service mode**: Runs under SCM (Windows Service Control Manager) in Session 0
 - **Foreground mode**: Runs in a terminal for testing/debugging
+
+#### `--monitor` - The Idle Scout
+
+A separate instance of the same binary runs as a background helper, launched from a Startup folder shortcut (`AccountRotateMonitor.lnk`). It:
+
+1. Polls `GetLastInputInfo` every 5 seconds in the user's session (Session 1+, where the API works correctly)
+2. Writes `is_idle`, `idle_updated`, and `idle_duration_seconds` to a dedicated file: `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json`
+3. Logs to its own file: `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_monitor.log`
+
+The monitor uses a separate file from the service's state file to avoid permission conflicts—the service runs as SYSTEM (which creates 0600 files) and the monitor runs as the regular user, so they can't both write to the same file. The monitor never reads the state file, and the service only reads (never writes) the idle file.
+
+> **Why a separate process?** `GetLastInputInfo` only works in the interactive user's session. A Windows service in Session 0 always sees idle time as 0. The monitor bridge lets the service know the real user idle status without requiring any hacks.
 
 #### `internal/ad` - The Directory Whisperer
 
@@ -146,11 +166,13 @@ Generates cryptographically secure passwords using `crypto/rand`:
 
 #### `internal/state` - The Memory
 
-Simple JSON-based persistence for rotation tracking:
+JSON-based persistence for rotation tracking and idle status:
 
-- **Location**: `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json`
-- **Content**: Last rotation timestamp, rotation count
-- **Behavior**: Creates fresh state if file is missing or corrupt
+- **State file** (service writes): `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json`
+  - Last rotation timestamp, rotation count, out-of-sync flag
+- **Idle file** (monitor writes, service reads): `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json`
+  - `is_idle` boolean, `idle_updated` timestamp, `idle_duration_seconds` value
+- **Behavior**: Creates fresh state if file is missing or corrupt. Idle file is world-readable (0644) so the service can read it regardless of which user wrote it.
 
 ### Build System
 
@@ -195,10 +217,12 @@ go test ./...
 
 | File | Purpose |
 |------|---------|
-| `C:\Program Files\sharedAccountRotate\sharedAccountRotate.log` | Service logs (when running as SCM service) |
-| `C:\Windows\Temp\sharedAccountRotate.log` | Service logs (install, dev, and foreground modes) |
-| `C:\Program Files\sharedAccountRotate\sharedAccountRotate_state.json` | Rotation state |
+| `C:\ProgramData\sharedAccountRotate\sharedAccountRotate.log` | Service logs |
+| `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_monitor.log` | Monitor logs |
+| `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json` | Rotation state (service writes) |
+| `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json` | Idle status (monitor writes, service reads) |
 | `C:\Program Files\sharedAccountRotate\sharedAccountRotate.exe` | Installed binary |
+| `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\AccountRotateMonitor.lnk` | Monitor startup shortcut |
 | `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` | Auto-logon registry |
 
 ---
