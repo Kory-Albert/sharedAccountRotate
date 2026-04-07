@@ -26,14 +26,14 @@ No PowerShell. No manual intervention. No "why do we have hundreds of passwords 
    sharedAccountRotate.exe --service install --domain corp.example.com --days 30
    ```
    This automatically:
-   - Creates `C:\Program Files\sharedAccountRotate\` (binary)
+   - Creates `C:\Program Files\sharedAccountRotate\` (service binary)
    - Creates `C:\ProgramData\sharedAccountRotate\` (state and logs)
-   - Copies the binary to Program Files
+   - Copies both `sharedAccountRotate.exe` and `AccountRotateMonitor.exe` to Program Files
    - Registers the service with Windows
    - Sets it to start automatically
-   - Installs a Startup folder shortcut for the idle monitor
+   - Installs a Startup folder shortcut that launches `AccountRotateMonitor.exe` (hidden)
 
-3. **Clean up**: Delete the original binary from Downloads—it's now living happily in Program Files
+3. **Clean up**: Delete the original binaries from Downloads—now living happily in Program Files
 
 4. **Start the service**:
    ```cmd
@@ -42,7 +42,7 @@ No PowerShell. No manual intervention. No "why do we have hundreds of passwords 
 
 That's it! The service will now rotate the password every 30 days when the workstation has been idle for 2 hours.
 
-> **Note**: The first time a user logs on after installation, the idle monitor helper (launched from the Startup folder shortcut) will start automatically. The service detects idle status from the monitor's status file, since `GetLastInputInfo` doesn't work in Session 0.
+> **Note**: The first time a user logs on after installation, the idle monitor helper (launched from the Startup folder shortcut) will start automatically hidden—no console window appears. The service detects idle status from the monitor's status file, since `GetLastInputInfo` doesn't work in Session 0.
 
 ---
 
@@ -83,8 +83,21 @@ sharedAccountRotate.exe --dev --domain corp.example.com --loglevel DEBUG
 sharedAccountRotate.exe --domain corp.example.com --days 7
 
 # Run the idle monitor manually (for testing the monitor)
-sharedAccountRotate.exe --monitor --loglevel DEBUG
+AccountRotateMonitor.exe --loglevel DEBUG
 ```
+
+---
+
+## Build
+
+**Build service binary**
+GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o
+sharedAccountRotate.exe ./cmd/sharedAccountRotate
+
+**Build monitor binary (hidden)**
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u
++%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
+
 
 ---
 

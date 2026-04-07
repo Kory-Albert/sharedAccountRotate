@@ -211,17 +211,19 @@ func installStartupShortcut(exePath string) error {
 	startupDir := `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp`
 	shortcutPath := filepath.Join(startupDir, "AccountRotateMonitor.lnk")
 
+	// The monitor binary is compiled alongside the service binary with -H=windowsgui
+	// (no console window). It lives in the same install directory.
+	monitorPath := filepath.Join(filepath.Dir(exePath), "AccountRotateMonitor.exe")
+
 	// PowerShell script to create a COM-based .lnk file
 	script := fmt.Sprintf(`
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("%s")
 $Shortcut.TargetPath = "%s"
-$Shortcut.Arguments = "--monitor"
 $Shortcut.WorkingDirectory = (Split-Path -Parent "%s")
 $Shortcut.Description = "Shared Account Rotate - Idle Monitor"
-$Shortcut.WindowStyle = 7
 $Shortcut.Save()
-`, shortcutPath, exePath, exePath)
+`, shortcutPath, monitorPath, monitorPath)
 
 	cmd := exec.Command("powershell", "-Command", script)
 	output, err := cmd.CombinedOutput()
