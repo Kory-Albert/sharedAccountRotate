@@ -120,18 +120,32 @@ func installService(cfg *Config) error {
 		return fmt.Errorf("service install – create data directory: %w", err)
 	}
 
-	// Copy binary to installation directory
-	destPath := filepath.Join(installDir, "sharedAccountRotate.exe")
-	cfg.Log.Infof("service: copying binary to %s", destPath)
-	if err := copyFile(srcPath, destPath); err != nil {
-		return fmt.Errorf("service install – copy binary: %w", err)
+	// Get the directory containing the current executable (service binary)
+	installBinDir := filepath.Dir(srcPath)
+
+	// Copy service binary to installation directory
+	serviceDestPath := filepath.Join(installDir, "sharedAccountRotate.exe")
+	cfg.Log.Infof("service: copying service binary to %s", serviceDestPath)
+	if err := copyFile(srcPath, serviceDestPath); err != nil {
+		return fmt.Errorf("service install – copy service binary: %w", err)
 	}
 
-	// Verify the copy succeeded
-	if _, err := os.Stat(destPath); err != nil {
-		return fmt.Errorf("service install – verify binary copy: %w", err)
+	// Copy monitor binary to installation directory (looks alongside the service binary)
+	monitorSrcPath := filepath.Join(installBinDir, "AccountRotateMonitor.exe")
+	monitorDestPath := filepath.Join(installDir, "AccountRotateMonitor.exe")
+	cfg.Log.Infof("service: copying monitor binary from %s to %s", monitorSrcPath, monitorDestPath)
+	if err := copyFile(monitorSrcPath, monitorDestPath); err != nil {
+		return fmt.Errorf("service install – copy monitor binary: %w", err)
 	}
-	cfg.Log.Infof("service: binary copied successfully")
+
+	// Verify both copies succeeded
+	if _, err := os.Stat(serviceDestPath); err != nil {
+		return fmt.Errorf("service install – verify service binary copy: %w", err)
+	}
+	if _, err := os.Stat(monitorDestPath); err != nil {
+		return fmt.Errorf("service install – verify monitor binary copy: %w", err)
+	}
+	cfg.Log.Infof("service: both binaries copied successfully")
 
 	// Connect to SCM and create service
 	m, err := mgr.Connect()
@@ -143,7 +157,7 @@ func installService(cfg *Config) error {
 	// CreateService properly handles argument escaping. Pass the exe path
 	// separately from the command-line arguments.
 	s, err := m.CreateService(
-		serviceName, destPath, mgr.Config{
+		serviceName, serviceDestPath, mgr.Config{
 			DisplayName: serviceDisplayName,
 			Description: serviceDescription,
 			StartType:   mgr.StartAutomatic,
@@ -164,7 +178,7 @@ func installService(cfg *Config) error {
 	// Create a startup shortcut (.lnk) in the user's Startup folder so the
 	// monitor helper runs each time the user logs on. The monitor tracks
 	// idle status to the shared state file.
-	if err := installStartupShortcut(destPath); err != nil {
+	if err := installStartupShortcut(monitorDestPath); err != nil {
 		cfg.Log.Errorf("service: could not install startup shortcut: %v (non-fatal)", err)
 	}
 
