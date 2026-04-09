@@ -183,7 +183,15 @@ func installService(cfg *Config) error {
 		cfg.Log.Errorf("service: could not install startup shortcut: %v (non-fatal)", err)
 	}
 
-	cfg.Log.Infof("service: %q installed successfully (StartType=Automatic)", serviceName)
+	// Start the service immediately after installation
+	if err := startService(cfg.Log); err != nil {
+		cfg.Log.Errorf("service: installed but could not start: %v (service will start on next boot)", err)
+	} else {
+		cfg.Log.Infof("service: %q installed and started successfully", serviceName)
+		return nil
+	}
+
+	cfg.Log.Infof("service: %q installed successfully (StartType=Automatic, will start on boot)", serviceName)
 	return nil
 }
 
