@@ -90,13 +90,35 @@ accountRotateMonitor.exe --loglevel DEBUG
 
 ## Build
 
-**Build service binary:**
+**Build and set Windows file version metadata:**
 ```bash
+# Get current date in YYYY.MM.DD format for version
+VERSION=$(date -u +%Y.%m.%d)
+
+# Build service binary
 GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
+
+# Set Windows file properties (FileVersion, ProductVersion, ProductName, Copyright)
+rcedit sharedAccountRotate.exe --set-version-string "FileVersion" "$VERSION" \
+  --set-version-string "ProductVersion" "$VERSION" \
+  --set-version-string "ProductName" "Shared Account Rotate" \
+  --set-version-string "CompanyName" "github.com/Kory-Albert" \
+  --set-version-string "LegalCopyright" "Copyright (c) github.com/Kory-Albert"
+
+# Build monitor binary (hidden, no console window)
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
+
+# Set Windows file properties for monitor
+rcedit AccountRotateMonitor.exe --set-version-string "FileVersion" "$VERSION" \
+  --set-version-string "ProductVersion" "$VERSION" \
+  --set-version-string "ProductName" "Shared Account Rotate" \
+  --set-version-string "CompanyName" "github.com/Kory-Albert" \
+  --set-version-string "LegalCopyright" "Copyright (c) github.com/Kory-Albert"
 ```
 
-**Build monitor binary (hidden, no console window):**
+**Quick build (without version metadata):**
 ```bash
+GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
 GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
 ```
 
