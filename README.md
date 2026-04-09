@@ -1,14 +1,14 @@
-# 🔐 sharedAccountRotate
+# sharedAccountRotate
 
 > *Because manually rotating passwords is so last millennium.*
 
-A Windows service that automatically rotates Active Directory passwords for auto-logon accounts (think: kiosks, shared workstations). It runs silently under the SYSTEM account, waits for the workstation to go idle, and then performs a seamless password rotation—complete with LSA secret storage, AD updates, and automatic session logoff.
+A Windows service that automatically rotates Active Directory passwords for auto-logon accounts (kiosks, shared workstations, service accounts). It runs silently under the SYSTEM account, waits for the workstation to go idle, and then performs a seamless password rotation with LSA secret storage, AD updates, and automatic session logoff.
 
 No PowerShell. No manual intervention. No "why do we have hundreds of passwords that don't expire".
 
 ---
 
-## ✨ Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -46,7 +46,7 @@ That's it! The service will now rotate the password every 30 days when the works
 
 ---
 
-## 🎮 Usage
+## Usage
 
 ### Service Control
 
@@ -83,25 +83,26 @@ sharedAccountRotate.exe --dev --domain corp.example.com --loglevel DEBUG
 sharedAccountRotate.exe --domain corp.example.com --days 7
 
 # Run the idle monitor manually (for testing the monitor)
-AccountRotateMonitor.exe --loglevel DEBUG
+accountRotateMonitor.exe --loglevel DEBUG
 ```
 
 ---
 
 ## Build
 
-**Build service binary**
-GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o
-sharedAccountRotate.exe ./cmd/sharedAccountRotate
+**Build service binary:**
+```bash
+GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
+```
 
-**Build monitor binary (hidden)**
-GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u
-+%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
-
+**Build monitor binary (hidden, no console window):**
+```bash
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
+```
 
 ---
 
-## 🏗️ Architecture & Development
+## Architecture
 
 > *For those who like to peek under the hood.*
 
@@ -131,7 +132,7 @@ The `service` package is the orchestration layer. It implements the service life
 
 1. **State Check**: Load `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json` and check if rotation is due
 2. **Idle Wait**: Read the monitor's idle status from `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json` and wait until `is_idle=true` and the session has been continuously idle for `--idle-hours`
-3. **Rotation**: Generate password → Store in LSA → Update AD → Verify → Logoff session
+3. **Rotation**: Generate password → Update AD → Store in LSA → Verify → Logoff session
 4. **Persist**: Save success timestamp for next interval calculation
 
 The service can run in two modes:
@@ -219,7 +220,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%
 
 ### Testing
 
-> ⚠️ **Heads up**: Tests requiring Windows APIs will fail on non-Windows systems. Use a Windows VM or CI/CD for full test coverage.
+> **Warning**: Tests requiring Windows APIs will fail on non-Windows systems. Use a Windows VM or CI/CD for full test coverage.
 
 ```bash
 # Run tests (some may be skipped on non-Windows)
@@ -240,7 +241,7 @@ go test ./...
 
 ---
 
-## 🛡️ Security Considerations
+## Security Considerations
 
 - **Runs as SYSTEM**: Required for LSA secret access and Winlogon registry modifications
 - **Machine account authentication**: Uses the computer's own AD credentials (no hardcoded passwords)
@@ -250,13 +251,13 @@ go test ./...
 
 ---
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](https://opensource.org/license/MIT) for details.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 This README is designed to be easily updated. When adding features:
 
@@ -267,4 +268,4 @@ This README is designed to be easily updated. When adding features:
 
 ---
 
-*May your passwords be strong, your sessions never expire, and your helpdesk tickets stay at zero.* 🔐
+*May your passwords be strong, your sessions never expire, and your helpdesk tickets stay at zero.*

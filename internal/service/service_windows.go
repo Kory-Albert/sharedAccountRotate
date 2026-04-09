@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -252,10 +253,71 @@ $Shortcut.Save()
 	return nil
 }
 
-// removeService deletes the service from the SCM.
+// removeService performs a complete cleanup:
+// 1. Stops the service if running
+// 2. Waits for the service to stop
+// 3. Kills any running monitor process (AccountRotateMonitor.exe)
+// 4. Removes the service from SCM
+// 5. Removes installation directories and startup shortcut
 func removeService(log *logger.Logger) error {
-	log.Infof("service: removing %q", serviceName)
+	log.Infof("service: removing %q and all related files", serviceName)
+
+	// Step 1: Stop the service if it's running
+	log.Info("service: stopping service (if running)")
 	m, err := mgr.Connect()
+	if err != nil {
+		// Service might already be removed, continue with cleanup
+		log.Warnf("service: could not connect to SCM (service may already be removed): %v", err)
+		m = nil
+	}
+
+	var svcHandle *mgr.Service
+	if m != nil {
+		svcHandle, err = m.OpenService(serviceName)
+		if err != nil {
+			log.Warnf("service: could not open service (may already be removed): %v", err)
+		} else {
+			defer svcHandle.Close()
+
+			// Check if service is running
+			status, err := svcHandle.Query()
+			if err == nil && status.State == svc.Running {
+				// Try to stop the service
+				if _, err := svcHandle.Control(svc.Stop); err != nil {
+					log.Warnf("service: could not stop service gracefully: %v", err)
+				} else {
+					log.Info("service: waiting for service to stop...")
+					// Wait up to 30 seconds for service to stop
+					for i := 0; i < 30; i++ {
+						time.Sleep(time.Second)
+						status, err := svcHandle.Query()
+						if err != nil || status.State != svc.Running {
+							log.Info("service: stopped")
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Step 2: Disconnect from SCM (we'll reconnect for delete if needed)
+	if m != nil {
+		m.Disconnect()
+	}
+
+	// Step 3: Kill the monitor process (AccountRotateMonitor.exe)
+	// This runs in user session and is not managed by SCM, so we must kill it explicitly.
+	// We intentionally do NOT kill sharedAccountRotate.exe - that might be this process
+	// if running from Program Files, or the SCM-managed service which we've already stopped.
+	log.Info("service: terminating monitor process (AccountRotateMonitor.exe)")
+	if err := killProcessByName("AccountRotateMonitor.exe"); err != nil {
+		log.Warnf("service: could not kill monitor process (may not be running): %v", err)
+	}
+
+	// Step 4: Reconnect to SCM and remove the service
+	log.Info("service: removing service from SCM")
+	m, err = mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("service remove – connect SCM: %w", err)
 	}
@@ -263,14 +325,61 @@ func removeService(log *logger.Logger) error {
 
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		return fmt.Errorf("service remove – open: %w", err)
+		// Service already removed - that's fine, continue with file cleanup
+		log.Warnf("service: service already removed from SCM: %v", err)
+	} else {
+		defer s.Close()
+		if err := s.Delete(); err != nil {
+			return fmt.Errorf("service remove – delete: %w", err)
+		}
+		log.Info("service: removed from SCM")
 	}
-	defer s.Close()
 
-	if err := s.Delete(); err != nil {
-		return fmt.Errorf("service remove – delete: %w", err)
+	// Step 5: Remove installation directories and startup shortcut
+	log.Info("service: removing installation files")
+
+	// Remove startup shortcut (common startup folder - same location used during install)
+	startupDir := `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp`
+	shortcutPath := filepath.Join(startupDir, "AccountRotateMonitor.lnk")
+	if err := os.Remove(shortcutPath); err != nil && !os.IsNotExist(err) {
+		log.Warnf("service: could not remove startup shortcut: %v", err)
+	} else if err == nil {
+		log.Infof("service: removed shortcut: %s", shortcutPath)
 	}
-	log.Infof("service: %q removed", serviceName)
+
+	// Remove Program Files directory (contains both binaries)
+	installDir := `C:\Program Files\sharedAccountRotate`
+	if err := os.RemoveAll(installDir); err != nil {
+		log.Warnf("service: could not remove installation directory: %v", err)
+	} else {
+		log.Infof("service: removed directory: %s", installDir)
+	}
+
+	// Remove ProgramData directory (contains state and logs)
+	dataDir := state.DataDir()
+	if err := os.RemoveAll(dataDir); err != nil {
+		log.Warnf("service: could not remove data directory: %v", err)
+	} else {
+		log.Infof("service: removed directory: %s", dataDir)
+	}
+
+	log.Info("service: removal complete")
+	return nil
+}
+
+// killProcessByName terminates all processes with the given executable name.
+// Uses taskkill.exe which is built into Windows.
+func killProcessByName(processName string) error {
+	cmd := exec.Command("taskkill", "/F", "/IM", processName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// taskkill returns error if no processes were found, which is OK
+		// Check for "not found" in output
+		if strings.Contains(string(output), "not found") || strings.Contains(string(output), "No tasks") {
+			return nil // No process to kill, that's fine
+		}
+		return fmt.Errorf("taskkill failed: %w (output: %s)", err, string(output))
+	}
 	return nil
 }
 
@@ -593,36 +702,35 @@ func (s *Service) rotate() error {
 	if err != nil {
 		return fmt.Errorf("password generate: %w", err)
 	}
-	// Zero the password on all exit paths. The defer runs after the AD retry
+	// Zero the password on all exit paths. The defer runs after the LSA retry
 	// loop, so pw remains valid for the full duration of the function.
 	defer password.Zero(pw)
 	s.cfg.Log.Infof("rotation: generated %d-character password (not logged)", len(pw))
 
-	// ── Phase 2: LSA / Autologon (written first) ──────────────────────────────
-	// Writing LSA before AD means a crash or LSA failure leaves AD untouched.
-	// The old password remains valid everywhere and the next retry cycle starts
-	// cleanly.
-	s.cfg.Log.Info("rotation: ── PHASE 2: storing password in LSA (Autologon) ───────")
-	if err := s.lsaCli.StoreAutologonPassword(s.cfg.Domain, s.cfg.Username, pw); err != nil {
-		// LSA failed – AD has not been touched. Safe to return; next retry
-		// will generate a fresh password and try again from a clean state.
-		return fmt.Errorf("LSA store password: %w", err)
-	}
-	s.cfg.Log.Info("rotation: LSA password stored")
-
-	// ── Phase 3: Active Directory ─────────────────────────────────────────────
-	// LSA now holds the new password. We MUST get AD to match before returning.
-	// Retry aggressively for adSyncRetryDuration to ride out transient DC
-	// connectivity issues (the most common real-world failure cause).
-	s.cfg.Log.Info("rotation: ── PHASE 3: setting password in Active Directory ──────")
-	adErr := s.setADPasswordWithRetry(pw)
+	// ── Phase 2: Active Directory (written first) ─────────────────────────────
+	// Writing AD before LSA means we attempt the more likely-to-fail operation first.
+	// If AD fails, LSA is never touched and we avoid creating a mismatch.
+	s.cfg.Log.Info("rotation: ── PHASE 2: setting password in Active Directory ──────")
+	adErr := s.adCli.SetPassword(s.cfg.Username, pw)
 	if adErr != nil {
-		// Hard failure: LSA has the new password but AD does not. The machine
-		// will be locked out on the next logon. Persist the out-of-sync flag
-		// so the service halts and the operator is alerted via the log.
-		return &outOfSyncError{cause: adErr}
+		// Hard failure: AD write failed after all retries. LSA has not been touched.
+		// Safe to return; next retry will generate a fresh password and try again
+		// from a clean state.
+		return fmt.Errorf("AD set password: %w", adErr)
 	}
 	s.cfg.Log.Info("rotation: AD password set")
+
+	// ── Phase 3: LSA / Autologon ──────────────────────────────────────────────
+	// AD now holds the new password. We MUST get LSA to match before returning.
+	// Retry for adSyncRetryDuration to handle transient LSA issues.
+	s.cfg.Log.Info("rotation: ── PHASE 3: storing password in LSA (Autologon) ───────")
+	if err := s.setLSAPasswordWithRetry(pw); err != nil {
+		// Hard failure: LSA write failed after all retries. AD has the new password
+		// but LSA does not. This creates a mismatch that will cause auto-logon
+		// failure on next logon. Persist the out-of-sync flag so the service halts.
+		return &outOfSyncError{cause: err}
+	}
+	s.cfg.Log.Info("rotation: LSA password stored")
 
 	// ── Phase 4: Verification ─────────────────────────────────────────────────
 	s.cfg.Log.Info("rotation: ── PHASE 4: verifying both writes ────────────────────")
@@ -660,38 +768,38 @@ func (s *Service) rotate() error {
 	return nil
 }
 
-// adSyncRetryDuration is how long to keep retrying the AD password write after
-// a successful LSA write. Covers transient DC connectivity blips while bounding
+// adSyncRetryDuration is how long to keep retrying the LSA password write after
+// a successful AD write. Covers transient LSA blips while bounding
 // the window during which LSA and AD are mismatched.
 const adSyncRetryDuration = 5 * time.Minute
 
-// adSyncRetryInterval is how long to wait between AD retry attempts.
+// adSyncRetryInterval is how long to wait between LSA retry attempts.
 const adSyncRetryInterval = 30 * time.Second
 
-// setADPasswordWithRetry attempts to set the AD password, retrying on failure
-// for up to adSyncRetryDuration. It is called only after the LSA write has
+// setLSAPasswordWithRetry attempts to set the LSA secret, retrying on failure
+// for up to adSyncRetryDuration. It is called only after the AD write has
 // already succeeded, so every second of retry is a second the passwords are
 // mismatched — hence the tight interval and bounded total duration.
-func (s *Service) setADPasswordWithRetry(pw []byte) error {
+func (s *Service) setLSAPasswordWithRetry(pw []byte) error {
 	deadline := time.Now().Add(adSyncRetryDuration)
 	attempt := 0
 	for {
 		attempt++
-		err := s.adCli.SetPassword(s.cfg.Username, pw)
+		err := s.lsaCli.StoreAutologonPassword(s.cfg.Domain, s.cfg.Username, pw)
 		if err == nil {
 			if attempt > 1 {
-				s.cfg.Log.Infof("rotation: AD password set after %d attempt(s)", attempt)
+				s.cfg.Log.Infof("rotation: LSA password stored after %d attempt(s)", attempt)
 			}
 			return nil
 		}
 
 		if time.Now().After(deadline) {
-			return fmt.Errorf("AD set password failed after %d attempt(s) over %v: %w",
+			return fmt.Errorf("LSA store password failed after %d attempt(s) over %v: %w",
 				attempt, adSyncRetryDuration, err)
 		}
 
 		s.cfg.Log.Errorf(
-			"rotation: AD set password attempt %d failed (LSA already updated – retrying in %v): %v",
+			"rotation: LSA store password attempt %d failed (AD already updated – retrying in %v): %v",
 			attempt, adSyncRetryInterval, err,
 		)
 		time.Sleep(adSyncRetryInterval)
