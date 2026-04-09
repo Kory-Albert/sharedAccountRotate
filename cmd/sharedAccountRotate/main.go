@@ -48,9 +48,9 @@ var (
 	// testing without waiting for the normal schedule.
 	flagDev = flag.Bool("dev", false, "Developer mode – rotate immediately, skip day/idle checks")
 
-	// Windows service control verbs (install / remove / start / stop / run).
+	// Windows service control verbs (install / remove / start / stop / run / update).
 	// "run" is what the SCM calls when starting the service normally.
-	flagSvcAction = flag.String("service", "", "Service action: install | remove | start | stop | run")
+	flagSvcAction = flag.String("service", "", "Service action: install | remove | start | stop | update | run")
 
 	// LDAP / AD connection.
 	flagDomain     = flag.String("domain", "", "AD domain (e.g. corp.example.com) – required")

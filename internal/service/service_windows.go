@@ -85,11 +85,13 @@ func HandleServiceAction(cfg *Config) error {
 		return startService(cfg.Log)
 	case "stop":
 		return stopService(cfg.Log)
+	case "update":
+		return updateService(cfg)
 	case "run":
 		// The SCM invokes this verb; run the service handler.
 		return runServiceHandler(cfg)
 	default:
-		return fmt.Errorf("unknown service action %q – valid: install, remove, start, stop, run", cfg.SvcAction)
+		return fmt.Errorf("unknown service action %q – valid: install, remove, start, stop, update, run", cfg.SvcAction)
 	}
 }
 
@@ -372,6 +374,111 @@ func removeService(log *logger.Logger) error {
 	}
 
 	log.Info("service: removal complete")
+	return nil
+}
+
+// updateService upgrades the service in place, preserving state and logs.
+// It stops the service, replaces binaries, re-registers with SCM, and restarts.
+func updateService(cfg *Config) error {
+	cfg.Log.Info("service: updating installation")
+
+	// 1. Stop the service if running (ignore error if already stopped)
+	if err := stopService(cfg.Log); err != nil {
+		cfg.Log.Warnf("service: could not stop service: %v", err)
+	}
+
+	// Wait for service to fully stop
+	time.Sleep(2 * time.Second)
+
+	// 2. Kill monitor process
+	cfg.Log.Info("service: terminating monitor process")
+	if err := killProcessByName("AccountRotateMonitor.exe"); err != nil {
+		cfg.Log.Warnf("service: could not kill monitor: %v", err)
+	}
+
+	// 3. Get the current executable path (the new version)
+	srcPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("service update – get executable path: %w", err)
+	}
+	srcPath, err = filepath.EvalSymlinks(srcPath)
+	if err != nil {
+		return fmt.Errorf("service update – resolve executable path: %w", err)
+	}
+
+	// 4. Replace binaries in Program Files
+	installDir := `C:\Program Files\sharedAccountRotate`
+	binDir := filepath.Dir(srcPath)
+
+	// Copy main service binary
+	serviceDestPath := filepath.Join(installDir, "sharedAccountRotate.exe")
+	cfg.Log.Infof("service: copying new service binary to %s", serviceDestPath)
+	if err := copyFile(srcPath, serviceDestPath); err != nil {
+		return fmt.Errorf("service update – copy service binary: %w", err)
+	}
+
+	// Copy monitor binary (look alongside the main binary)
+	monitorSrcPath := filepath.Join(binDir, "AccountRotateMonitor.exe")
+	monitorDestPath := filepath.Join(installDir, "AccountRotateMonitor.exe")
+	cfg.Log.Infof("service: copying new monitor binary to %s", monitorDestPath)
+	if err := copyFile(monitorSrcPath, monitorDestPath); err != nil {
+		return fmt.Errorf("service update – copy monitor binary: %w", err)
+	}
+
+	// 5. Re-register service with SCM (keeps same settings, just updates the binary path)
+	cfg.Log.Info("service: re-registering service with SCM")
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("service update – connect SCM: %w", err)
+	}
+	defer m.Disconnect()
+
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return fmt.Errorf("service update – service not found (need to install first): %w", err)
+	}
+	defer s.Close()
+
+	// Update the binary path (this is what actually updates the service)
+	// We need to delete and recreate to change the binary path
+	if err := s.Delete(); err != nil {
+		cfg.Log.Warnf("service: could not delete old service: %v", err)
+	}
+	m.Disconnect()
+
+	// Reconnect and create fresh service
+	m, err = mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("service update – reconnect SCM: %w", err)
+	}
+	defer m.Disconnect()
+
+	_, err = m.CreateService(
+		serviceName, serviceDestPath, mgr.Config{
+			DisplayName: serviceDisplayName,
+			Description: serviceDescription,
+			StartType:   mgr.StartAutomatic,
+		},
+		"--service", "run",
+		"--domain", cfg.Domain,
+		"--ldap-server", cfg.LDAPServer,
+		"--ldap-port", fmt.Sprintf("%d", cfg.LDAPPort),
+		"--username", cfg.Username,
+		"--days", fmt.Sprintf("%d", cfg.RotationDays),
+		"--idle-hours", fmt.Sprintf("%.2f", cfg.IdleHours),
+	)
+	if err != nil {
+		return fmt.Errorf("service update – recreate service: %w", err)
+	}
+
+	// 6. Start the service
+	if err := startService(cfg.Log); err != nil {
+		cfg.Log.Errorf("service: update complete but could not start: %v", err)
+	} else {
+		cfg.Log.Info("service: update complete and running")
+	}
+
+	cfg.Log.Info("service: update complete")
 	return nil
 }
 
