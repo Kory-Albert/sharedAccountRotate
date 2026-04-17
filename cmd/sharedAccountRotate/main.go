@@ -164,6 +164,7 @@ func main() {
 		IdleHours:    *flagIdleHours,
 		DevMode:      *flagDev,
 		SvcAction:    *flagSvcAction,
+		LogLevel:     *flagLogLevel,
 	}
 
 	// ── Dispatch on --service flag ────────────────────────────────────────────
