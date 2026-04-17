@@ -68,6 +68,7 @@ type Config struct {
 	Username     string
 	RotationDays int
 	IdleHours    float64
+	LogLevel     string
 	DevMode      bool
 	SvcAction    string
 }
@@ -172,6 +173,7 @@ func installService(cfg *Config) error {
 		"--username", cfg.Username,
 		"--days", fmt.Sprintf("%d", cfg.RotationDays),
 		"--idle-hours", fmt.Sprintf("%.2f", cfg.IdleHours),
+		"--loglevel", cfg.LogLevel,
 	)
 	if err != nil {
 		return fmt.Errorf("service install – create: %w", err)
@@ -466,6 +468,7 @@ func updateService(cfg *Config) error {
 		"--username", cfg.Username,
 		"--days", fmt.Sprintf("%d", cfg.RotationDays),
 		"--idle-hours", fmt.Sprintf("%.2f", cfg.IdleHours),
+		"--loglevel", cfg.LogLevel,
 	)
 	if err != nil {
 		return fmt.Errorf("service update – recreate service: %w", err)
