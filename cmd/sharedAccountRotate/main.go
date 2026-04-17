@@ -8,8 +8,8 @@
 //   5. Verifies both writes succeeded
 //   6. Signs the current session out so the machine auto-logs back in
 //
-// A separate instance of the same binary runs as an idle monitor helper
-// (launched from a Startup folder .lnk with --monitor). The monitor polls
+// A separate instance idle monitor helper
+// (launched from a Startup folder). The monitor polls
 // GetLastInputInfo in the user's session and writes idle status to its own file
 // (sharedAccountRotate_idle.json). The service reads from that file — the two
 // processes never write to the same file, avoiding permission conflicts.
@@ -325,9 +325,7 @@ Examples:
   sharedAccountRotate.exe --service start
   sharedAccountRotate.exe --service stop
   sharedAccountRotate.exe --service remove
-
-  # Idle monitor (runs from Startup folder shortcut after install)
-  sharedAccountRotate.exe --monitor
+  sharedAccountRotate.exe --service update
 
 Installation:
   The service install action performs the following steps:
@@ -337,9 +335,9 @@ Installation:
     4. Verifies the copy succeeded before registering the service
     5. Registers the service to run from the Program Files location
     6. Sets the service to start automatically
-    7. Installs a startup shortcut (.lnk) with --monitor to track user idle status
+    7. Installs the accountRotateMonitor.exe in the startup folder
 
-  The original binary can be deleted after successful installation.
+  The original binarys can be deleted after successful installation.
 `)
 	}
 
