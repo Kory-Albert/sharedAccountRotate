@@ -1,8 +1,6 @@
 # sharedAccountRotate
 
-> *Because manually rotating passwords is so last millennium.*
-
-A Windows service that automatically rotates Active Directory passwords for auto-logon accounts (kiosks, shared workstations, service accounts). It runs silently under the SYSTEM account, waits for the workstation to go idle, and then performs a seamless password rotation with LSA secret storage, AD updates, and automatic session logoff.
+A Windows service that automatically rotates Active Directory passwords for auto‑logon accounts (kiosks, shared workstations). It runs as SYSTEM, waits for the workstation to go idle, then rotates the password in both AD and the LSA secret, and logs off the user.
 
 No PowerShell. No manual intervention. No "why do we have hundreds of passwords that don't expire".
 
@@ -12,282 +10,134 @@ No PowerShell. No manual intervention. No "why do we have hundreds of passwords 
 
 ### Prerequisites
 
-- Windows (this is a Windows-only project, compiled under linux using GOOS=windows GOARCH=amd64 go build)
-- Active Directory domain
-- The computer account needs delegated "Reset Password" permission on the target user object
-- Rights to install Windows services (typically Administrators)
+1. The computer's Active Directory object must have **"Reset Password"** delegated on the target user account.
+2. Windows (this is Windows‑only; cross‑compile from Linux with `GOOS=windows`).
+3. Administrator rights to install Windows services.
 
-### Installation (5 Minutes or Less)
+### Installation
 
-1. **Download** the binary and drop it anywhere convenient (Downloads folder works fine)
+```cmd
+sharedAccountRotate.exe --service install --domain corp.example.com --days 30
+```
 
-2. **Install the service**:
-   ```cmd
-   sharedAccountRotate.exe --service install --domain corp.example.com --days 30
-   ```
-   This automatically:
-   - Creates `C:\Program Files\sharedAccountRotate\` (service binary)
-   - Creates `C:\ProgramData\sharedAccountRotate\` (state and logs)
-   - Copies both `sharedAccountRotate.exe` and `AccountRotateMonitor.exe` to Program Files
-   - Registers the service with Windows
-   - Sets it to start automatically
-   - Installs a Startup folder shortcut that launches `AccountRotateMonitor.exe` (hidden)
+This automatically:
+- Creates `C:\Program Files\sharedAccountRotate\` (binaries)
+- Creates `C:\ProgramData\sharedAccountRotate\` (logs, state, idle file)
+- Registers the service with `StartType=Automatic`
+- Installs a Startup folder shortcut for the idle monitor helper
 
-3. **Clean up**: Delete the original binaries from Downloads—now living happily in Program Files
+Then the service will start automatically.
+> You will need to reboot or logout the kiosk account for the monitor to start properly!
 
-4. **Start the service**:
-   ```cmd
-   sharedAccountRotate.exe --service start
-   ```
-
-That's it! The service will now rotate the password every 30 days when the workstation has been idle for 2 hours.
-
-> **Note**: The first time a user logs on after installation, the idle monitor helper (launched from the Startup folder shortcut) will start automatically hidden—no console window appears. The service detects idle status from the monitor's status file, since `GetLastInputInfo` doesn't work in Session 0.
+The service will now rotate the password every 30 days when the workstation has been idle for 2 hours (defaults).
 
 ---
 
 ## Usage
 
-### Service Control
+### Service Commands
 
-| Action | Command |
-|--------|---------|
-| Install | `sharedAccountRotate.exe --service install --domain <domain>` |
-| Start | `sharedAccountRotate.exe --service start` |
-| Stop | `sharedAccountRotate.exe --service stop` |
-| Remove | `sharedAccountRotate.exe --service remove` |
+| Action   | Command |
+|----------|---------|
+| Install  | `--service install --domain <domain>` |
+| Start    | `--service start` |
+| Stop     | `--service stop` |
+| Remove   | `--service remove` |
+| Update   | `--service update` |
 
 ### Common Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--days` | `30` | Days between password rotations |
-| `--idle-hours` | `2.0` | Hours of idle time required before rotation |
-| `--domain` | *required* | Your AD domain (e.g., `corp.example.com`) |
-| `--ldap-server` | `nil` | LDAP server address; if not specified, uses `--domain` |
-| `--username` | *hostname* | AD account to rotate (defaults to machine name) |
-| `--loglevel` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
-| `--dev` | `false` | Skip all checks, rotate immediately (useful for testing) |
-| `--monitor` | `false` | Idle monitor mode—polls `GetLastInputInfo` and writes idle status (launched via Startup shortcut) |
+| Flag             | Default         | Description |
+|------------------|-----------------|-------------|
+| `--days`         | `30`            | Days between rotations |
+| `--idle-hours`   | `2.0`           | Required idle time (hours) |
+| `--domain`       | *required*      | AD domain (e.g., `corp.example.com`) |
+| `--ldap-server`  | same as domain  | LDAP server address (optional) |
+| `--username`     | machine name    | AD account to rotate |
+| `--loglevel`     | `INFO`          | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `--dev`          | `false`         | Rotate immediately (skip idle/checks) |
 
 ### Examples
 
 ```cmd
-# Install with custom rotation interval (14 days) and longer idle requirement (3 hours)
+# Install with custom rotation and idle times
 sharedAccountRotate.exe --service install --domain corp.example.com --days 14 --idle-hours 3
 
-# Dev mode - test rotation immediately without waiting
-sharedAccountRotate.exe --dev --domain corp.example.com --loglevel DEBUG
+# Foreground testing
+sharedAccountRotate.exe --domain corp.example.com --loglevel DEBUG
 
-# Run in foreground (for debugging or development)
-sharedAccountRotate.exe --domain corp.example.com --days 7
-
-# Run the idle monitor manually (for testing the monitor)
-accountRotateMonitor.exe --loglevel DEBUG
+# Run idle monitor manually (for debugging)
+AccountRotateMonitor.exe --loglevel DEBUG
 ```
 
 ---
 
 ## Build
 
-**Build and set Windows file version metadata:**
 ```bash
-# Get current date in YYYY.MM.DD format for version
+# Set version (optional)
 VERSION=$(date -u +%Y.%m.%d)
 
-# Build service binary
+# Build service
 GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
 
-# Set Windows file properties (FileVersion, ProductVersion, ProductName, Copyright)
+# Build monitor (no console window)
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o accountRotateMonitor.exe ./cmd/accountrotate-monitor
+
+# (Optional) Add Windows version metadata with `rcedit`
 rcedit sharedAccountRotate.exe --set-version-string "FileVersion" "$VERSION" \
   --set-version-string "ProductVersion" "$VERSION" \
   --set-version-string "ProductName" "Shared Account Rotate" \
   --set-version-string "CompanyName" "github.com/Kory-Albert" \
   --set-version-string "LegalCopyright" "Copyright (c) github.com/Kory-Albert"
 
-# Build monitor binary (hidden, no console window)
-GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
-
 # Set Windows file properties for monitor
-rcedit AccountRotateMonitor.exe --set-version-string "FileVersion" "$VERSION" \
+rcedit accountRotateMonitor.exe --set-version-string "FileVersion" "$VERSION" \
   --set-version-string "ProductVersion" "$VERSION" \
   --set-version-string "ProductName" "Shared Account Rotate" \
   --set-version-string "CompanyName" "github.com/Kory-Albert" \
   --set-version-string "LegalCopyright" "Copyright (c) github.com/Kory-Albert"
 ```
 
-**Quick build (without version metadata):**
-```bash
-GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
-GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o AccountRotateMonitor.exe ./cmd/accountrotate-monitor
-```
-
 ---
 
 ## Architecture
 
-> *For those who like to peek under the hood.*
+- **`internal/service`** – Orchestrates the rotation loop: check state, wait for idle, call AD/LSA, verify, logoff.
+- **`internal/ad`** – LDAPS (port 636) with machine account authentication. Updates `unicodePwd` via `Replace` (requires "Reset Password" right).
+- **`internal/lsa`** – Stores the password in LSA secret and updates Winlogon registry keys for auto‑logon.
+- **`internal/state`** – JSON persistence: rotation timestamp, count, out‑of‑sync flag, plus idle status (written by monitor, read by service).
+- **`accountRotateMonitor.exe`** – Runs in the user session, polls `GetLastInputInfo`, writes idle status to a shared file. Launched from Startup folder.
 
-### Project Structure
+### Why a separate monitor process?
 
-```
-.
-├── cmd/sharedAccountRotate/     # Entry point (CLI flag parsing, service dispatch)
-│   └── main.go
-├── internal/
-│   ├── activity/                 # Idle time detection (GetLastInputInfo)
-│   ├── ad/                       # Active Directory operations via LDAPS
-│   ├── lsa/                      # LSA secrets + Winlogon registry
-│   ├── session/                  # Windows session enumeration/logoff
-│   ├── password/                 # Cryptographically secure password generation
-│   ├── state/                    # Persistent state management (JSON) + idle status
-│   ├── logger/                   # Dual-output logging (stdout + file)
-│   └── service/                  # SCM integration + rotation orchestration
-└── go.mod
-```
+`GetLastInputInfo` only works in an interactive session. A SYSTEM service (Session 0) always sees zero idle time. The monitor runs as the logged‑on user and bridges that gap.
 
-### Key Components
+---
 
-#### `internal/service` - The Conductor
+## Important File Locations
 
-The `service` package is the orchestration layer. It implements the service lifecycle and the main rotation loop:
-
-1. **State Check**: Load `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json` and check if rotation is due
-2. **Idle Wait**: Read the monitor's idle status from `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json` and wait until `is_idle=true` and the session has been continuously idle for `--idle-hours`
-3. **Rotation**: Generate password → Update AD → Store in LSA → Verify → Logoff session
-4. **Persist**: Save success timestamp for next interval calculation
-
-The service can run in two modes:
-- **Service mode**: Runs under SCM (Windows Service Control Manager) in Session 0
-- **Foreground mode**: Runs in a terminal for testing/debugging
-
-#### `--monitor` - The Idle Scout
-
-A separate instance of the same binary runs as a background helper, launched from a Startup folder shortcut (`AccountRotateMonitor.lnk`). It:
-
-1. Polls `GetLastInputInfo` every 5 seconds in the user's session (Session 1+, where the API works correctly)
-2. Writes `is_idle`, `idle_updated`, and `idle_duration_seconds` to a dedicated file: `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json`
-3. Logs to its own file: `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_monitor.log`
-
-The monitor uses a separate file from the service's state file to avoid permission conflicts—the service runs as SYSTEM (which creates 0600 files) and the monitor runs as the regular user, so they can't both write to the same file. The monitor never reads the state file, and the service only reads (never writes) the idle file.
-
-> **Why a separate process?** `GetLastInputInfo` only works in the interactive user's session. A Windows service in Session 0 always sees idle time as 0. The monitor bridge lets the service know the real user idle status without requiring any hacks.
-
-#### `internal/ad` - The Directory Whisperer
-
-Active Directory integration using LDAPS (port 636) with NTLM authentication:
-
-- **Bind**: Authenticates using the machine account credentials (no hardcoded passwords)
-- **Search**: Finds the target user DN via LDAP search
-- **Modify**: Updates the `unicodePwd` attribute using the proper delete+add sequence
-- **Verify**: Performs a test bind with the new password to confirm replication
-
-#### `internal/lsa` - The Vault Keeper
-
-Manages the LSA secret that Windows uses for auto-logon:
-
-- **Store**: Creates/updates the `DefaultPassword` LSA secret
-- **Registry**: Updates `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` keys
-- **Verify**: Reads back the secret to confirm storage succeeded
-
-> **Security Note**: This requires running as SYSTEM, which is why this is a Windows service.
-
-#### `internal/password` - The Entropy Generator
-
-Generates cryptographically secure passwords using `crypto/rand`:
-
-- Minimum 24 characters (configurable)
-- Multiple character classes (upper, lower, digits, symbols)
-- Secure zeroing of byte slices after use
-
-#### `internal/state` - The Memory
-
-JSON-based persistence for rotation tracking and idle status:
-
-- **State file** (service writes): `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json`
-  - Last rotation timestamp, rotation count, out-of-sync flag
-- **Idle file** (monitor writes, service reads): `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json`
-  - `is_idle` boolean, `idle_updated` timestamp, `idle_duration_seconds` value
-- **Behavior**: Creates fresh state if file is missing or corrupt. Idle file is world-readable (0644) so the service can read it regardless of which user wrote it.
-
-### Build System
-
-Since this is Windows-only code, cross-compilation is required when developing on other platforms:
-
-```bash
-# Build for Windows (64-bit)
-GOOS=windows GOARCH=amd64 go build -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
-
-# Build with embedded timestamp
-GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o sharedAccountRotate.exe ./cmd/sharedAccountRotate
-```
-
-### Adding Features
-
-**To add a new CLI flag:**
-1. Add the flag variable in `cmd/sharedAccountRotate/main.go`
-2. Add it to the `service.Config` struct
-3. Pass it when constructing the config in `main()`
-4. Update usage examples in `init()`
-
-**To add new logging levels:**
-1. Add the method to `internal/logger/logger.go`
-2. Update `LogLevel` constants if needed
-3. Remember to check `shouldLog()` before writing
-
-**To modify the rotation flow:**
-1. Look in `internal/service/service_windows.go`
-2. The `runLoop()` method controls the main flow
-3. The `rotate()` method performs the actual password change
-
-### Testing
-
-> **Warning**: Tests requiring Windows APIs will fail on non-Windows systems. Use a Windows VM or CI/CD for full test coverage.
-
-```bash
-# Run tests (some may be skipped on non-Windows)
-go test ./...
-```
-
-### Important File Locations
-
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
 | `C:\ProgramData\sharedAccountRotate\sharedAccountRotate.log` | Service logs |
 | `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_monitor.log` | Monitor logs |
 | `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json` | Rotation state (service writes) |
 | `C:\ProgramData\sharedAccountRotate\sharedAccountRotate_idle.json` | Idle status (monitor writes, service reads) |
-| `C:\Program Files\sharedAccountRotate\sharedAccountRotate.exe` | Installed binary |
-| `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\AccountRotateMonitor.lnk` | Monitor startup shortcut |
-| `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` | Auto-logon registry |
+| `C:\Program Files\sharedAccountRotate\` | Installed binaries |
+| `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\AccountRotateMonitor.lnk` | Startup shortcut for monitor |
+| `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon` | Auto‑logon registry keys |
 
 ---
 
-## Security Considerations
+## Security Notes
 
-- **Runs as SYSTEM**: Required for LSA secret access and Winlogon registry modifications
-- **Machine account authentication**: Uses the computer's own AD credentials (no hardcoded passwords)
-- **Passwords never logged**: Byte slices are zeroed after use; no password ever touches the logs
-- **LDAPS only**: All AD communication happens over TLS (port 636)
-- **Verification**: Both AD and LSA writes are verified before considering rotation successful
+- Runs as **SYSTEM** (required for LSA and Winlogon access).
+- Authenticates to AD using the **machine account** – no hardcoded credentials.
+- Passwords are **never logged**; byte slices are zeroed after use.
+- All AD communication is over **LDAPS** (TLS).
 
 ---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](https://opensource.org/license/MIT) for details.
-
----
-
-## Contributing
-
-This README is designed to be easily updated. When adding features:
-
-1. Update the Quick Start section if installation changes
-2. Update the Usage table if adding/removing flags
-3. Update the Architecture section if changing core behavior
-4. Keep the fun tone in the intro—password rotation is boring enough already
-
----
-
-*May your passwords be strong, your sessions never expire, and your helpdesk tickets stay at zero.*
+MIT — see [LICENSE](LICENSE) for details.
