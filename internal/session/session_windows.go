@@ -15,28 +15,28 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/logger"
 )
 
 var (
-	modWtsapi32           = windows.NewLazySystemDLL("wtsapi32.dll")
+	modWtsapi32              = windows.NewLazySystemDLL("wtsapi32.dll")
 	procWTSEnumerateSessions = modWtsapi32.NewProc("WTSEnumerateSessionsW")
-	procWTSLogoffSession  = modWtsapi32.NewProc("WTSLogoffSession")
-	procWTSFreeMemory     = modWtsapi32.NewProc("WTSFreeMemory")
-	procWTSQuerySessionInfo = modWtsapi32.NewProc("WTSQuerySessionInformationW")
+	procWTSLogoffSession     = modWtsapi32.NewProc("WTSLogoffSession")
+	procWTSFreeMemory        = modWtsapi32.NewProc("WTSFreeMemory")
+	procWTSQuerySessionInfo  = modWtsapi32.NewProc("WTSQuerySessionInformationW")
 )
 
 // WTS_SESSION_INFO mirrors the Windows WTS_SESSION_INFOW structure.
 type wtsSessionInfo struct {
-	SessionID         uint32
-	pWinStationName   *uint16
-	State             uint32
+	SessionID       uint32
+	pWinStationName *uint16
+	State           uint32
 }
 
 const (
 	wtsCurrentServerHandle uintptr = 0
-	wtsUserName            uint32  = 5  // WTSUserName info class
-	wtsActive              uint32  = 0  // WTSConnectState: active session
+	wtsUserName            uint32  = 5 // WTSUserName info class
+	wtsActive              uint32  = 0 // WTSConnectState: active session
 )
 
 // Client handles session management.

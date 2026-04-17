@@ -28,7 +28,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/logger"
 )
 
 // ─── Windows API declarations ─────────────────────────────────────────────────
@@ -36,12 +36,12 @@ import (
 var (
 	modAdvapi32 = windows.NewLazySystemDLL("advapi32.dll")
 
-	procLsaOpenPolicy        = modAdvapi32.NewProc("LsaOpenPolicy")
-	procLsaStorePrivateData  = modAdvapi32.NewProc("LsaStorePrivateData")
+	procLsaOpenPolicy          = modAdvapi32.NewProc("LsaOpenPolicy")
+	procLsaStorePrivateData    = modAdvapi32.NewProc("LsaStorePrivateData")
 	procLsaRetrievePrivateData = modAdvapi32.NewProc("LsaRetrievePrivateData")
-	procLsaClose             = modAdvapi32.NewProc("LsaClose")
-	procLsaFreeMemory        = modAdvapi32.NewProc("LsaFreeMemory")
-	procLsaNtStatusToWinError = modAdvapi32.NewProc("LsaNtStatusToWinError")
+	procLsaClose               = modAdvapi32.NewProc("LsaClose")
+	procLsaFreeMemory          = modAdvapi32.NewProc("LsaFreeMemory")
+	procLsaNtStatusToWinError  = modAdvapi32.NewProc("LsaNtStatusToWinError")
 )
 
 // LSA_OBJECT_ATTRIBUTES – all fields zeroed is valid for LsaOpenPolicy.
@@ -161,10 +161,10 @@ func (c *Client) setWinlogonKeys(domain, username string) error {
 	defer k.Close()
 
 	values := map[string]string{
-		"AutoAdminLogon":   "1",
-		"ForceAutoLogon":   "1",
+		"AutoAdminLogon":    "1",
+		"ForceAutoLogon":    "1",
 		"DefaultDomainName": domain,
-		"DefaultUserName":  username,
+		"DefaultUserName":   username,
 		// DefaultPassword registry value is intentionally left blank –
 		// the LSA secret is the authoritative location. Winlogon reads the
 		// LSA secret preferentially when it is set.

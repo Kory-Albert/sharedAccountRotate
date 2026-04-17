@@ -1,4 +1,4 @@
-module github.com/sharedAccountRotate/sharedAccountRotate
+module github.com/Kory-Albert/sharedAccountRotate
 
 go 1.22
 

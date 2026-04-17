@@ -39,12 +39,12 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/ad"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/lsa"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/password"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/session"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/state"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/ad"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/logger"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/lsa"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/password"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/session"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/state"
 )
 
 const (

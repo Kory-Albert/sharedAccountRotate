@@ -21,7 +21,7 @@ import (
 	ldap "github.com/go-ldap/ldap/v3"
 	"github.com/go-ldap/ldap/v3/gssapi"
 
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/logger"
 )
 
 // Client wraps an LDAP connection to Active Directory.

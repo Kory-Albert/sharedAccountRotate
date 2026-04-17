@@ -29,10 +29,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/activity"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/logger"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/service"
-	"github.com/sharedAccountRotate/sharedAccountRotate/internal/state"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/activity"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/logger"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/service"
+	"github.com/Kory-Albert/sharedAccountRotate/internal/state"
 )
 
 // ─── CLI flags ────────────────────────────────────────────────────────────────
