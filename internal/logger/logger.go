@@ -1,13 +1,6 @@
-// Package logger provides a simple structured logger that writes to both
-// os.Stdout and a rotating log file simultaneously.
-//
-// Design goals:
-//   - Zero external dependencies (stdlib only)
-//   - Thread-safe (single mutex)
-//   - Timestamps on every line
-//   - Fatal() calls os.Exit(1) so callers can abort on unrecoverable errors
-//   - Passwords must NEVER be passed to any log function; the logger itself
-//     has no special redaction – callers are responsible for not logging secrets.
+// Package logger provides a lightweight, thread‑safe logger that writes to stdout and an optional file, using only the stdlib.
+// It supports leveled logs and zero‑dependency fatal exits.
+// No secrets may be logged – callers are responsible for sanitising input.
 
 package logger
 

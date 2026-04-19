@@ -1,13 +1,4 @@
-// Package activity detects workstation idle time using the Windows
-// GetLastInputInfo API, which tracks the most recent keyboard or mouse event
-// across all sessions.
-//
-// This is the same mechanism used by screen savers and power management to
-// determine user presence. It is non-invasive (read-only, no hooks installed)
-// and accurate enough for our purpose.
-//
-// The IsIdle function returns true only when the system has not received
-// any mouse or keyboard input for at least the configured duration.
+// Package activity provides idle‑time detection via GetLastInputInfo.
 
 //go:build windows
 
@@ -17,6 +8,7 @@ import (
 	"fmt"
 	"time"
 	"unsafe"
+
 	"golang.org/x/sys/windows"
 )
 
@@ -34,7 +26,6 @@ type lastInputInfo struct {
 	dwTime uint32 // tick count of last input event (wraps every ~49.7 days)
 }
 
-// IdleTime returns how long the workstation has been idle (no keyboard/mouse).
 func IdleTime() (time.Duration, error) {
 	info := lastInputInfo{
 		cbSize: uint32(unsafe.Sizeof(lastInputInfo{})),

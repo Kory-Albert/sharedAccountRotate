@@ -1,18 +1,6 @@
-// Package state manages the persistent state file that records when the last
-// successful password rotation occurred.
-//
-// The file is written atomically (write to a temp file, then rename) to avoid
-// corruption if the service is killed mid-write.
-//
-// Location: C:\ProgramData\sharedAccountRotate\sharedAccountRotate_state.json
-// Permissions: created 0600 (owner-read/write only, enforced via Windows ACL
-// when possible). The file contains no secrets – only the timestamp.
-//
-// OutOfSync flag: if the LSA write succeeds but the AD write subsequently fails
-// hard (all retries exhausted), the state file is written with OutOfSync=true.
-// The service will refuse to rotate again until an operator clears the flag,
-// preventing a second rotation that would produce yet another mismatched pair.
-
+// Package state manages rotation persistence and idle status in
+// C:\ProgramData\sharedAccountRotate.
+// No secrets are stored in the state file; it contains timestamps and a sync flag.
 package state
 
 import (

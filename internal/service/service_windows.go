@@ -1,27 +1,7 @@
-// Package service integrates with the Windows Service Control Manager (SCM)
-// and contains the main rotation orchestration loop.
-//
-// Service lifecycle:
-//   install  → registers the service with the SCM
-//   start    → tells the SCM to start the service
-//   run      → called by the SCM; runs the rotation loop until stop is signalled
-//   stop     → asks the SCM to stop the service
-//   remove   → unregisters the service
-//
-// The rotation loop:
-//   1. Check whether a rotation is due (based on last-rotation timestamp + --days).
-//   2. If not due, sleep until the next check and repeat.
-//   3. If due, wait until the workstation has been idle for --idle-hours.
-//   4. Generate a new random password.
-//   5. Store the password in the LSA secret (Autologon) – written first so a
-//      failure here leaves AD untouched and the machine in a safe state.
-//   6. Set the password in Active Directory – retried for up to 5 minutes on
-//      failure; on hard failure the out-of-sync flag is set and rotations halt.
-//   7. Verify both writes.
-//   8. Log off the target user's session.
-//   9. Record the successful rotation and go back to step 1.
-
-//go:build windows
+// Package service integrates with the Windows Service Control Manager (SCM).
+// Service lifecycle: install, start, run, stop, remove.
+// Rotation loop: check due, wait idle, generate password, store LSA, set AD,
+// verify both, logoff user, record success.
 
 package service
 
@@ -52,14 +32,11 @@ const (
 	serviceDisplayName = "Shared Account Password Rotator"
 	serviceDescription = "Rotates Active Directory auto-logon account password on a schedule."
 
-	// How often to poll the state file when a rotation is not yet due.
 	duePollInterval = 1 * time.Hour
-
-	// Password length (characters).
-	passwordLength = 32
+	passwordLength  = 32
 )
 
-// Config holds all runtime configuration for the service and rotation loop.
+// Config holds runtime configuration for the service and rotation loop.
 type Config struct {
 	Log          *logger.Logger
 	Domain       string
@@ -89,7 +66,6 @@ func HandleServiceAction(cfg *Config) error {
 	case "update":
 		return updateService(cfg)
 	case "run":
-		// The SCM invokes this verb; run the service handler.
 		return runServiceHandler(cfg)
 	default:
 		return fmt.Errorf("unknown service action %q – valid: install, remove, start, stop, update, run", cfg.SvcAction)
@@ -99,22 +75,18 @@ func HandleServiceAction(cfg *Config) error {
 const installDir = `C:\Program Files\sharedAccountRotate`
 
 // installService installs the service to Program Files and registers with SCM.
-// It copies the binary to a standard location before creating the service.
 func installService(cfg *Config) error {
 	cfg.Log.Infof("service: installing %q", serviceName)
 
-	// Get the current executable path
 	srcPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("service install – get executable path: %w", err)
 	}
-	// Resolve any symlinks to get the real path
 	srcPath, err = filepath.EvalSymlinks(srcPath)
 	if err != nil {
 		return fmt.Errorf("service install – resolve executable path: %w", err)
 	}
 
-	// Ensure installation directories exist
 	cfg.Log.Infof("service: creating installation directory %s", installDir)
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return fmt.Errorf("service install – create directory: %w", err)
@@ -124,17 +96,14 @@ func installService(cfg *Config) error {
 		return fmt.Errorf("service install – create data directory: %w", err)
 	}
 
-	// Get the directory containing the current executable (service binary)
 	installBinDir := filepath.Dir(srcPath)
 
-	// Copy service binary to installation directory
 	serviceDestPath := filepath.Join(installDir, "sharedAccountRotate.exe")
 	cfg.Log.Infof("service: copying service binary to %s", serviceDestPath)
 	if err := copyFile(srcPath, serviceDestPath); err != nil {
 		return fmt.Errorf("service install – copy service binary: %w", err)
 	}
 
-	// Copy monitor binary to installation directory (looks alongside the service binary)
 	monitorSrcPath := filepath.Join(installBinDir, "AccountRotateMonitor.exe")
 	monitorDestPath := filepath.Join(installDir, "AccountRotateMonitor.exe")
 	cfg.Log.Infof("service: copying monitor binary from %s to %s", monitorSrcPath, monitorDestPath)
@@ -142,7 +111,6 @@ func installService(cfg *Config) error {
 		return fmt.Errorf("service install – copy monitor binary: %w", err)
 	}
 
-	// Verify both copies succeeded
 	if _, err := os.Stat(serviceDestPath); err != nil {
 		return fmt.Errorf("service install – verify service binary copy: %w", err)
 	}
@@ -151,15 +119,12 @@ func installService(cfg *Config) error {
 	}
 	cfg.Log.Infof("service: both binaries copied successfully")
 
-	// Connect to SCM and create service
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("service install – connect SCM: %w", err)
 	}
 	defer m.Disconnect()
 
-	// CreateService properly handles argument escaping. Pass the exe path
-	// separately from the command-line arguments.
 	s, err := m.CreateService(
 		serviceName, serviceDestPath, mgr.Config{
 			DisplayName: serviceDisplayName,
@@ -180,14 +145,10 @@ func installService(cfg *Config) error {
 	}
 	defer s.Close()
 
-	// Create a startup shortcut (.lnk) in the user's Startup folder so the
-	// monitor helper runs each time the user logs on. The monitor tracks
-	// idle status to the shared state file.
 	if err := installStartupShortcut(monitorDestPath); err != nil {
 		cfg.Log.Errorf("service: could not install startup shortcut: %v (non-fatal)", err)
 	}
 
-	// Start the service immediately after installation
 	if err := startService(cfg.Log); err != nil {
 		cfg.Log.Errorf("service: installed but could not start: %v (service will start on next boot)", err)
 	} else {
@@ -207,42 +168,32 @@ func copyFile(src, dst string) error {
 	}
 	defer sourceFile.Close()
 
-	// Get source file info for permissions
 	stat, err := sourceFile.Stat()
 	if err != nil {
 		return err
 	}
 
-	// Create destination file
 	destFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, stat.Mode())
 	if err != nil {
 		return err
 	}
 	defer destFile.Close()
 
-	// Copy content
 	_, err = io.Copy(destFile, sourceFile)
 	if err != nil {
 		return err
 	}
 
-	// Ensure data is written to disk
 	return destFile.Sync()
 }
 
-// installStartupShortcut creates a .lnk in the all-users Startup folder
-// so the monitor runs for whichever user auto-logs in. Uses the common
-// startup folder (C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp).
+// installStartupShortcut creates a .lnk in the all-users Startup folder.
 func installStartupShortcut(exePath string) error {
-	// Common Startup folder – applies to all users, including the auto-logon account.
 	startupDir := `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp`
 	shortcutPath := filepath.Join(startupDir, "AccountRotateMonitor.lnk")
 
-	// The monitor binary is compiled alongside the service binary with -H=windowsgui
-	// (no console window). It lives in the same install directory.
 	monitorPath := filepath.Join(filepath.Dir(exePath), "AccountRotateMonitor.exe")
 
-	// PowerShell script to create a COM-based .lnk file
 	script := fmt.Sprintf(`
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("%s")
@@ -265,20 +216,13 @@ $Shortcut.Save()
 	return nil
 }
 
-// removeService performs a complete cleanup:
-// 1. Stops the service if running
-// 2. Waits for the service to stop
-// 3. Kills any running monitor process (AccountRotateMonitor.exe)
-// 4. Removes the service from SCM
-// 5. Removes installation directories and startup shortcut
+// removeService stops the service, removes it from SCM, and deletes installation files.
 func removeService(log *logger.Logger) error {
 	log.Infof("service: removing %q and all related files", serviceName)
 
-	// Step 1: Stop the service if it's running
 	log.Info("service: stopping service (if running)")
 	m, err := mgr.Connect()
 	if err != nil {
-		// Service might already be removed, continue with cleanup
 		log.Warnf("service: could not connect to SCM (service may already be removed): %v", err)
 		m = nil
 	}
@@ -291,15 +235,12 @@ func removeService(log *logger.Logger) error {
 		} else {
 			defer svcHandle.Close()
 
-			// Check if service is running
 			status, err := svcHandle.Query()
 			if err == nil && status.State == svc.Running {
-				// Try to stop the service
 				if _, err := svcHandle.Control(svc.Stop); err != nil {
 					log.Warnf("service: could not stop service gracefully: %v", err)
 				} else {
 					log.Info("service: waiting for service to stop...")
-					// Wait up to 30 seconds for service to stop
 					for i := 0; i < 30; i++ {
 						time.Sleep(time.Second)
 						status, err := svcHandle.Query()
@@ -313,21 +254,15 @@ func removeService(log *logger.Logger) error {
 		}
 	}
 
-	// Step 2: Disconnect from SCM (we'll reconnect for delete if needed)
 	if m != nil {
 		m.Disconnect()
 	}
 
-	// Step 3: Kill the monitor process (AccountRotateMonitor.exe)
-	// This runs in user session and is not managed by SCM, so we must kill it explicitly.
-	// We intentionally do NOT kill sharedAccountRotate.exe - that might be this process
-	// if running from Program Files, or the SCM-managed service which we've already stopped.
 	log.Info("service: terminating monitor process (AccountRotateMonitor.exe)")
 	if err := killProcessByName("AccountRotateMonitor.exe"); err != nil {
 		log.Warnf("service: could not kill monitor process (may not be running): %v", err)
 	}
 
-	// Step 4: Reconnect to SCM and remove the service
 	log.Info("service: removing service from SCM")
 	m, err = mgr.Connect()
 	if err != nil {
@@ -337,7 +272,6 @@ func removeService(log *logger.Logger) error {
 
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		// Service already removed - that's fine, continue with file cleanup
 		log.Warnf("service: service already removed from SCM: %v", err)
 	} else {
 		defer s.Close()
@@ -347,10 +281,8 @@ func removeService(log *logger.Logger) error {
 		log.Info("service: removed from SCM")
 	}
 
-	// Step 5: Remove installation directories and startup shortcut
 	log.Info("service: removing installation files")
 
-	// Remove startup shortcut (common startup folder - same location used during install)
 	startupDir := `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp`
 	shortcutPath := filepath.Join(startupDir, "AccountRotateMonitor.lnk")
 	if err := os.Remove(shortcutPath); err != nil && !os.IsNotExist(err) {
@@ -359,7 +291,6 @@ func removeService(log *logger.Logger) error {
 		log.Infof("service: removed shortcut: %s", shortcutPath)
 	}
 
-	// Remove Program Files directory (contains both binaries)
 	installDir := `C:\Program Files\sharedAccountRotate`
 	if err := os.RemoveAll(installDir); err != nil {
 		log.Warnf("service: could not remove installation directory: %v", err)
@@ -367,7 +298,6 @@ func removeService(log *logger.Logger) error {
 		log.Infof("service: removed directory: %s", installDir)
 	}
 
-	// Remove ProgramData directory (contains state and logs)
 	dataDir := state.DataDir()
 	if err := os.RemoveAll(dataDir); err != nil {
 		log.Warnf("service: could not remove data directory: %v", err)
@@ -380,25 +310,20 @@ func removeService(log *logger.Logger) error {
 }
 
 // updateService upgrades the service in place, preserving state and logs.
-// It stops the service, replaces binaries, re-registers with SCM, and restarts.
 func updateService(cfg *Config) error {
 	cfg.Log.Info("service: updating installation")
 
-	// 1. Stop the service if running (ignore error if already stopped)
 	if err := stopService(cfg.Log); err != nil {
 		cfg.Log.Warnf("service: could not stop service: %v", err)
 	}
 
-	// Wait for service to fully stop
 	time.Sleep(2 * time.Second)
 
-	// 2. Kill monitor process
 	cfg.Log.Info("service: terminating monitor process")
 	if err := killProcessByName("AccountRotateMonitor.exe"); err != nil {
 		cfg.Log.Warnf("service: could not kill monitor: %v", err)
 	}
 
-	// 3. Get the current executable path (the new version)
 	srcPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("service update – get executable path: %w", err)
@@ -408,18 +333,15 @@ func updateService(cfg *Config) error {
 		return fmt.Errorf("service update – resolve executable path: %w", err)
 	}
 
-	// 4. Replace binaries in Program Files
 	installDir := `C:\Program Files\sharedAccountRotate`
 	binDir := filepath.Dir(srcPath)
 
-	// Copy main service binary
 	serviceDestPath := filepath.Join(installDir, "sharedAccountRotate.exe")
 	cfg.Log.Infof("service: copying new service binary to %s", serviceDestPath)
 	if err := copyFile(srcPath, serviceDestPath); err != nil {
 		return fmt.Errorf("service update – copy service binary: %w", err)
 	}
 
-	// Copy monitor binary (look alongside the main binary)
 	monitorSrcPath := filepath.Join(binDir, "AccountRotateMonitor.exe")
 	monitorDestPath := filepath.Join(installDir, "AccountRotateMonitor.exe")
 	cfg.Log.Infof("service: copying new monitor binary to %s", monitorDestPath)
@@ -427,7 +349,6 @@ func updateService(cfg *Config) error {
 		return fmt.Errorf("service update – copy monitor binary: %w", err)
 	}
 
-	// 5. Re-register service with SCM (keeps same settings, just updates the binary path)
 	cfg.Log.Info("service: re-registering service with SCM")
 	m, err := mgr.Connect()
 	if err != nil {
@@ -441,14 +362,11 @@ func updateService(cfg *Config) error {
 	}
 	defer s.Close()
 
-	// Update the binary path (this is what actually updates the service)
-	// We need to delete and recreate to change the binary path
 	if err := s.Delete(); err != nil {
 		cfg.Log.Warnf("service: could not delete old service: %v", err)
 	}
 	m.Disconnect()
 
-	// Reconnect and create fresh service
 	m, err = mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("service update – reconnect SCM: %w", err)
@@ -474,7 +392,6 @@ func updateService(cfg *Config) error {
 		return fmt.Errorf("service update – recreate service: %w", err)
 	}
 
-	// 6. Start the service
 	if err := startService(cfg.Log); err != nil {
 		cfg.Log.Errorf("service: update complete but could not start: %v", err)
 	} else {
@@ -486,15 +403,12 @@ func updateService(cfg *Config) error {
 }
 
 // killProcessByName terminates all processes with the given executable name.
-// Uses taskkill.exe which is built into Windows.
 func killProcessByName(processName string) error {
 	cmd := exec.Command("taskkill", "/F", "/IM", processName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// taskkill returns error if no processes were found, which is OK
-		// Check for "not found" in output
 		if strings.Contains(string(output), "not found") || strings.Contains(string(output), "No tasks") {
-			return nil // No process to kill, that's fine
+			return nil
 		}
 		return fmt.Errorf("taskkill failed: %w (output: %s)", err, string(output))
 	}
@@ -547,27 +461,19 @@ func stopService(log *logger.Logger) error {
 
 // ─── Service handler (called by SCM) ─────────────────────────────────────────
 
-// windowsService implements svc.Handler.
 type windowsService struct{ cfg *Config }
 
 func runServiceHandler(cfg *Config) error {
 	return svc.Run(serviceName, &windowsService{cfg: cfg})
 }
 
-// Execute is called by the SCM. It starts the rotation goroutine and handles
-// SCM control requests (Stop, Pause, etc.).
+// Execute is called by the SCM. It starts the rotation goroutine and handles SCM control requests.
 func (ws *windowsService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (svcSpecificExitCode bool, errno uint32) {
-	// Initialize COM on the service thread. Windows services run in Session 0
-	// which does not have COM pre-initialized. Several Windows APIs used during
-	// TLS certificate validation (crypt32/cert validation paths) and Kerberos
-	// SSP indirectly invoke COM and will fail with 0x8000FFFF if it is not
-	// initialized.
 	windows.CoInitializeEx(0, windows.COINIT_MULTITHREADED)
 	defer windows.CoUninitialize()
 
 	changes <- svc.Status{State: svc.StartPending}
 
-	// Start the rotation loop in a goroutine so we can also service SCM cmds.
 	stop := make(chan struct{})
 	done := make(chan error, 1)
 	svcObj := New(ws.cfg)
@@ -595,7 +501,7 @@ loop:
 				ws.cfg.Log.Info("service: stop/shutdown received")
 				changes <- svc.Status{State: svc.StopPending}
 				close(stop)
-				<-done // wait for the loop to exit cleanly
+				<-done
 				break loop
 			case svc.Interrogate:
 				changes <- c.CurrentStatus
@@ -639,13 +545,12 @@ func (s *Service) Run() error {
 	return s.runLoop(stop)
 }
 
-// runLoop is the main rotation loop. It runs until the stop channel is closed.
+// runLoop is the main rotation loop. Runs until stop channel is closed.
 func (s *Service) runLoop(stop <-chan struct{}) error {
 	s.cfg.Log.Infof("rotation: starting loop (domain=%s username=%s days=%d idle=%.1fh dev=%v)",
 		s.cfg.Domain, s.cfg.Username, s.cfg.RotationDays, s.cfg.IdleHours, s.cfg.DevMode)
 
 	for {
-		// ── Phase 1: Load state and check if rotation is due ──────────────────
 		st, err := s.states.Load()
 		if err != nil {
 			s.cfg.Log.Errorf("rotation: could not load state file: %v – treating as first run", err)
@@ -653,9 +558,6 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 		}
 
 		if due, err := s.states.IsDue(st, s.cfg.RotationDays, s.cfg.DevMode); err != nil {
-			// OutOfSync: LSA and AD are mismatched. Log loudly every poll cycle
-			// so the condition is visible in the log file, then sleep and recheck
-			// (an operator may clear the flag while the service is running).
 			s.cfg.Log.Errorf("rotation: HALTED – %v", err)
 			s.cfg.Log.Error("rotation: manual intervention required before rotations will resume")
 			select {
@@ -683,15 +585,10 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 
 		s.cfg.Log.Info("rotation: rotation is due – beginning pre-rotation checks")
 
-		// ── Phase 2: Wait for workstation idle (reported by monitor via state file) ─
 		if !s.cfg.DevMode {
 			minIdle := time.Duration(s.cfg.IdleHours * float64(time.Hour))
 			s.cfg.Log.Infof("rotation: waiting for %.1f hours of idle (monitor report)", s.cfg.IdleHours)
 
-			// Poll the monitor's dedicated idle file every 5 seconds. The monitor
-			// writes is_idle=true when GetLastInputInfo reports the session is idle.
-			// We wait until is_idle is true and the session has been continuously
-			// idle for at least --idle-hours.
 			consecutiveIdleStart := time.Time{}
 		idleWait:
 			for {
@@ -727,13 +624,7 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 			s.cfg.Log.Info("rotation: [DEV MODE] skipping idle check")
 		}
 
-		// ── Phase 3: Perform the rotation ─────────────────────────────────────
 		if err := s.rotate(); err != nil {
-			// Check for the special out-of-sync case: LSA was updated but AD
-			// write failed after all retries. Further rotation attempts would
-			// produce yet another mismatched pair, so we persist the flag and
-			// halt. The error message in the state file and logs tells the
-			// operator exactly what to do.
 			var oos *outOfSyncError
 			if errors.As(err, &oos) {
 				s.cfg.Log.Errorf("rotation: OUT OF SYNC – %v", err)
@@ -742,8 +633,6 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 				if saveErr := s.states.Save(st); saveErr != nil {
 					s.cfg.Log.Errorf("rotation: could not persist out-of-sync flag: %v – flag is in memory only until service restart", saveErr)
 				}
-				// Continue looping so the service stays alive and keeps logging
-				// the halted state (operator may be watching the log remotely).
 				select {
 				case <-stop:
 					return nil
@@ -753,7 +642,6 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 			}
 
 			s.cfg.Log.Errorf("rotation: FAILED: %v", err)
-			// Back off before retrying to avoid hammering AD on persistent failures.
 			backoff := 15 * time.Minute
 			s.cfg.Log.Infof("rotation: will retry in %v", backoff)
 			select {
@@ -764,12 +652,8 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 			continue
 		}
 
-		// ── Phase 4: Persist success ──────────────────────────────────────────
 		s.states.MarkSuccess(st)
 		if err := s.states.Save(st); err != nil {
-			// Non-fatal: the passwords are already updated. We log the error
-			// but do not fail – the worst case is the rotation runs again before
-			// the next scheduled interval.
 			s.cfg.Log.Errorf("rotation: could not save state file: %v (rotation succeeded; update state manually if needed)", err)
 		} else {
 			s.cfg.Log.Infof("rotation: state saved (count=%d last=%s)",
@@ -781,7 +665,6 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 			os.Exit(0)
 		}
 
-		// Immediately check for stop before sleeping.
 		select {
 		case <-stop:
 			return nil
@@ -790,72 +673,34 @@ func (s *Service) runLoop(stop <-chan struct{}) error {
 	}
 }
 
-// rotate performs the full password rotation sequence:
-//
-//  1. Generate password
-//  2. Store in LSA  ← first, so a crash here leaves AD untouched
-//  3. Set in AD     ← retried aggressively; signals out-of-sync on hard failure
-//  4. Verify both
-//  5. Log off user
-//
-// Order rationale: true atomicity is impossible because AD and LSA are
-// independent systems with no shared transaction. Writing LSA first is the
-// safer choice:
-//
-//   - If the LSA write fails  → AD is untouched → old password still valid →
-//     clean retry next cycle. No lockout risk.
-//   - If the AD write fails after LSA succeeds → passwords are mismatched.
-//     The service retries the AD write for adSyncRetryDuration before giving
-//     up. On hard failure it persists OutOfSync=true in the state file and
-//     refuses further rotations until an operator intervenes. This is
-//     preferable to silently rotating again (which would write yet another
-//     mismatched pair).
-//
-// Rollback is intentionally not attempted: we do not know the previous AD
-// password, so we cannot restore it. The out-of-sync flag is the recovery
-// signal.
+// rotate performs the full password rotation sequence.
+// Order: AD first (more likely to fail), then LSA. On LSA failure after AD success, marks out-of-sync.
 func (s *Service) rotate() error {
 	s.cfg.Log.Info("rotation: ── PHASE 1: generating new password ──────────────────")
 	pw, err := password.Generate(passwordLength)
 	if err != nil {
 		return fmt.Errorf("password generate: %w", err)
 	}
-	// Zero the password on all exit paths. The defer runs after the LSA retry
-	// loop, so pw remains valid for the full duration of the function.
 	defer password.Zero(pw)
 	s.cfg.Log.Infof("rotation: generated %d-character password (not logged)", len(pw))
 
-	// ── Phase 2: Active Directory (written first) ─────────────────────────────
-	// Writing AD before LSA means we attempt the more likely-to-fail operation first.
-	// If AD fails, LSA is never touched and we avoid creating a mismatch.
 	s.cfg.Log.Info("rotation: ── PHASE 2: setting password in Active Directory ──────")
 	adErr := s.adCli.SetPassword(s.cfg.Username, pw)
 	if adErr != nil {
-		// Hard failure: AD write failed after all retries. LSA has not been touched.
-		// Safe to return; next retry will generate a fresh password and try again
-		// from a clean state.
 		return fmt.Errorf("AD set password: %w", adErr)
 	}
 	s.cfg.Log.Info("rotation: AD password set")
 
-	// ── Phase 3: LSA / Autologon ──────────────────────────────────────────────
-	// AD now holds the new password. We MUST get LSA to match before returning.
-	// Retry for adSyncRetryDuration to handle transient LSA issues.
 	s.cfg.Log.Info("rotation: ── PHASE 3: storing password in LSA (Autologon) ───────")
 	if err := s.setLSAPasswordWithRetry(pw); err != nil {
-		// Hard failure: LSA write failed after all retries. AD has the new password
-		// but LSA does not. This creates a mismatch that will cause auto-logon
-		// failure on next logon. Persist the out-of-sync flag so the service halts.
 		return &outOfSyncError{cause: err}
 	}
 	s.cfg.Log.Info("rotation: LSA password stored")
 
-	// ── Phase 4: Verification ─────────────────────────────────────────────────
 	s.cfg.Log.Info("rotation: ── PHASE 4: verifying both writes ────────────────────")
 
 	s.cfg.Log.Info("rotation: verifying AD password (test bind)")
 	if err := s.adCli.VerifyPasswordChange(s.cfg.Username, pw); err != nil {
-		// AD replication can cause a brief delay. Retry once after a short wait.
 		s.cfg.Log.Warnf("rotation: AD verify failed on first attempt: %v – retrying in 30s", err)
 		time.Sleep(30 * time.Second)
 		if err2 := s.adCli.VerifyPasswordChange(s.cfg.Username, pw); err2 != nil {
@@ -870,12 +715,8 @@ func (s *Service) rotate() error {
 	}
 	s.cfg.Log.Info("rotation: LSA password verified ✓")
 
-	// ── Phase 5: Log off the user ─────────────────────────────────────────────
 	s.cfg.Log.Info("rotation: ── PHASE 5: logging off user session ──────────────────")
 	if err := s.sessCli.LogoffUser(s.cfg.Username); err != nil {
-		// Logoff failure is not treated as a rotation failure – the passwords
-		// are already updated. The auto-logon will occur on the next reboot
-		// or manual logoff.
 		s.cfg.Log.Warnf("rotation: session logoff failed (non-fatal): %v", err)
 		s.cfg.Log.Warn("rotation: passwords are updated; user will need to log off manually or reboot")
 	} else {
@@ -886,18 +727,12 @@ func (s *Service) rotate() error {
 	return nil
 }
 
-// adSyncRetryDuration is how long to keep retrying the LSA password write after
-// a successful AD write. Covers transient LSA blips while bounding
-// the window during which LSA and AD are mismatched.
-const adSyncRetryDuration = 5 * time.Minute
+const (
+	adSyncRetryDuration = 5 * time.Minute
+	adSyncRetryInterval = 30 * time.Second
+)
 
-// adSyncRetryInterval is how long to wait between LSA retry attempts.
-const adSyncRetryInterval = 30 * time.Second
-
-// setLSAPasswordWithRetry attempts to set the LSA secret, retrying on failure
-// for up to adSyncRetryDuration. It is called only after the AD write has
-// already succeeded, so every second of retry is a second the passwords are
-// mismatched — hence the tight interval and bounded total duration.
+// setLSAPasswordWithRetry attempts to set LSA secret, retrying up to adSyncRetryDuration.
 func (s *Service) setLSAPasswordWithRetry(pw []byte) error {
 	deadline := time.Now().Add(adSyncRetryDuration)
 	attempt := 0
@@ -924,9 +759,7 @@ func (s *Service) setLSAPasswordWithRetry(pw []byte) error {
 	}
 }
 
-// outOfSyncError is returned by rotate() when the LSA write succeeded but the
-// AD write failed after all retries. The runLoop checks for this type to
-// persist the OutOfSync flag before returning the error.
+// outOfSyncError indicates LSA updated but AD write failed permanently.
 type outOfSyncError struct {
 	cause error
 }

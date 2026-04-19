@@ -1,14 +1,5 @@
-// Package ad handles all Active Directory operations using pure Go LDAP over
-// TLS (LDAPS port 636). No PowerShell is invoked.
-//
-// Authentication: The service runs as SYSTEM. GSSAPIBind with SSPI client
-// uses the machine account process token for authentication.
-// The machine account must have delegated "Reset Password" on the target user.
-//
-// LDAP library: github.com/go-ldap/ldap/v3
-// GSSAPI package: github.com/go-ldap/ldap/v3/gssapi
-
-//go:build windows
+// Package ad provides LDAP password updates and verification using
+// system‑wide GSSAPI/SSPI over LDAPS. No external scripts are used.
 
 package ad
 
@@ -45,8 +36,7 @@ func New(log *logger.Logger, domain, server string, port int) *Client {
 }
 
 // SetPassword changes the unicodePwd attribute of the named user in AD.
-// The password slice must be zeroed by the caller after this returns.
-// Requires the machine account to have "Reset Password" delegated on the user.
+// The password slice will be zeroed by the caller after this returns.
 func (c *Client) SetPassword(username string, newPassword []byte) error {
 	c.log.Infof("AD: connecting to %s:%d", c.server, c.port)
 
@@ -62,8 +52,6 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 
 	// ── GSSAPI/SSPI bind using machine account process token ──────────────────
 	// GSSAPIBind with an SSPI client uses Windows integrated authentication.
-	// When running as SYSTEM, this authenticates as the machine account (HOSTNAME$).
-	// The SPN format is "ldap/hostname" (e.g., "ldap/tfhd-dc1.tfhd.ad").
 	c.log.Info("AD: binding with GSSAPI/SSPI (machine account credential)")
 
 	sspiClient, err := gssapi.NewSSPIClient()
@@ -114,15 +102,7 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 	}
 
 	// ── Modify unicodePwd ─────────────────────────────────────────────────────
-	// When the caller holds "Reset Password" (not "Change Password"), AD expects
-	// a Replace operation rather than Delete+Add. Delete+Add is for self-changes
-	// where the old password must be supplied in the Delete value. With delegated
-	// Reset Password rights, Replace atomically overwrites unicodePwd regardless
-	// of the current value — no knowledge of the old password required.
-	//
-	// unicodePwd is a binary attribute. Go strings are byte sequences (not
-	// UTF-8 encoded on assignment), so string(encoded) preserves the raw
-	// UTF-16LE bytes exactly as-is when go-ldap writes them onto the wire.
+	// AD expects a Replace operation rather than Delete+Add.
 	c.log.Info("AD: sending unicodePwd replace request")
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Replace("unicodePwd", []string{string(encoded)})
@@ -136,8 +116,7 @@ func (c *Client) SetPassword(username string, newPassword []byte) error {
 	return nil
 }
 
-// VerifyPasswordChange confirms the AD password update by test-binding with
-// the new credentials. The password is used in-memory only and never logged.
+// VerifyPasswordChange confirms the AD password update by test-binding with the new credentials.
 func (c *Client) VerifyPasswordChange(username string, newPassword []byte) error {
 	c.log.Info("AD: verifying password change by test-bind")
 

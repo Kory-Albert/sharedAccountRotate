@@ -1,11 +1,5 @@
 // Package session handles Windows session enumeration and logoff.
-//
-// After a successful password rotation we must sign out the target user so
-// that Winlogon can use the new password to auto-log back in. We use
-// WTSEnumerateSessions / WTSLogoffSession from wtsapi32.dll so we can target
-// only the correct user session without disturbing any admin sessions.
-
-//go:build windows
+// After password rotation we sign out the target user so Winlogon uses the new password for auto-logon.
 
 package session
 
@@ -26,7 +20,6 @@ var (
 	procWTSQuerySessionInfo  = modWtsapi32.NewProc("WTSQuerySessionInformationW")
 )
 
-// WTS_SESSION_INFO mirrors the Windows WTS_SESSION_INFOW structure.
 type wtsSessionInfo struct {
 	SessionID       uint32
 	pWinStationName *uint16
@@ -35,8 +28,8 @@ type wtsSessionInfo struct {
 
 const (
 	wtsCurrentServerHandle uintptr = 0
-	wtsUserName            uint32  = 5 // WTSUserName info class
-	wtsActive              uint32  = 0 // WTSConnectState: active session
+	wtsUserName            uint32  = 5
+	wtsActive              uint32  = 0
 )
 
 // Client handles session management.
@@ -50,7 +43,6 @@ func New(log *logger.Logger) *Client {
 }
 
 // LogoffUser finds all active sessions belonging to username and logs them off.
-// It is not an error if no session is found (the user may not be logged in yet).
 func (c *Client) LogoffUser(username string) error {
 	c.log.Infof("session: enumerating sessions to find user %q", username)
 
@@ -62,7 +54,6 @@ func (c *Client) LogoffUser(username string) error {
 
 	loggedOff := 0
 	for _, s := range sessions {
-		// Query the username associated with this session.
 		sessUser, err := querySessionUsername(s.SessionID)
 		if err != nil {
 			c.log.Warnf("session: could not query user for session %d: %v", s.SessionID, err)
@@ -98,7 +89,7 @@ func enumerateSessions() ([]wtsSessionInfo, error) {
 
 	r0, _, err := procWTSEnumerateSessions.Call(
 		wtsCurrentServerHandle,
-		0, 1, // Reserved, Version
+		0, 1,
 		uintptr(unsafe.Pointer(&pSessions)),
 		uintptr(unsafe.Pointer(&count)),
 	)
@@ -107,7 +98,6 @@ func enumerateSessions() ([]wtsSessionInfo, error) {
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(pSessions)))
 
-	// Copy the structs out before freeing.
 	slice := unsafe.Slice(pSessions, count)
 	result := make([]wtsSessionInfo, count)
 	copy(result, slice)
@@ -140,7 +130,7 @@ func logoffSession(sessionID uint32) error {
 	r0, _, err := procWTSLogoffSession.Call(
 		wtsCurrentServerHandle,
 		uintptr(sessionID),
-		1, // bWait = TRUE: block until logoff completes
+		1,
 	)
 	if r0 == 0 {
 		return fmt.Errorf("WTSLogoffSession: %w", err)
@@ -148,7 +138,6 @@ func logoffSession(sessionID uint32) error {
 	return nil
 }
 
-// strings_EqualFold is a dependency-free case-insensitive string compare.
 func strings_EqualFold(a, b string) bool {
 	if len(a) != len(b) {
 		return false

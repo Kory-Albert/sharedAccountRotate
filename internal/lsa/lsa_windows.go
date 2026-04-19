@@ -1,22 +1,5 @@
-// Package lsa provides functions to read and write LSA (Local Security
-// Authority) secret values on Windows using the native LsaStorePrivateData /
-// LsaRetrievePrivateData APIs.
-//
-// Sysinternals Autologon stores the auto-logon password in the LSA secret
-// named "DefaultPassword" (the same name used by the Windows GINA / Winlogon
-// credential provider). We replicate that exact behaviour.
-//
-// The registry keys written by Autologon under
-//
-//	HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
-//
-// are also updated here to ensure DefaultUserName, DefaultDomainName,
-// AutoAdminLogon, and ForceAutoLogon are set correctly.
-//
-// All operations require SeSecurityPrivilege or SYSTEM-level access.
-// Running as SYSTEM (via a Windows service) satisfies this requirement.
-
-//go:build windows
+// Package lsa provides Windows LSA secret handling for auto‑logon passwords.
+// It uses native Win32 APIs and updates the Winlogon registry keys.
 
 package lsa
 
@@ -79,11 +62,8 @@ func New(log *logger.Logger) *Client {
 }
 
 // StoreAutologonPassword writes the new password into the LSA secret
-// "DefaultPassword" – the same location Sysinternals Autologon uses – and
-// updates the Winlogon registry keys.
-//
-// domain and username are stored in clear-text in the Winlogon registry key
-// (this is normal Windows behaviour; only the password is protected by LSA).
+// "DefaultPassword" (used by Sysinternals Autologon) and updates the
+// Winlogon registry keys. Domain and username are stored as plain text
 func (c *Client) StoreAutologonPassword(domain, username string, password []byte) error {
 	c.log.Info("LSA: opening policy handle")
 	policyHandle, err := lsaOpenPolicy()
@@ -113,8 +93,7 @@ func (c *Client) StoreAutologonPassword(domain, username string, password []byte
 }
 
 // VerifyAutologonPassword reads back the LSA secret and confirms it matches the
-// supplied password. The in-memory comparison is done byte-by-byte and both
-// sides are zeroed immediately after.
+// supplied password. Comparison is byte‑by‑byte and both sides are zeroed.
 func (c *Client) VerifyAutologonPassword(password []byte) error {
 	c.log.Info("LSA: verifying DefaultPassword secret")
 	policyHandle, err := lsaOpenPolicy()
