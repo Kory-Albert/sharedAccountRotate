@@ -117,6 +117,10 @@ rcedit accountRotateMonitor.exe --set-file-version "$VERSION" \
 
 `GetLastInputInfo` only works in an interactive session. A SYSTEM service (Session 0) always sees zero idle time. The monitor runs as the logged‑on user and bridges that gap.
 
+### Application Flow
+
+![Flow chart](flow.svg)
+
 ---
 
 ## Important File Locations
