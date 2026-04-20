@@ -74,6 +74,8 @@ AccountRotateMonitor.exe --loglevel DEBUG
 
 ## Build
 
+> Optional install [rcedit](https://github.com/electron/rcedit) to modify windows binary details.
+
 ```bash
 # Set version (optional)
 VERSION=$(date -u +%Y.%m.%d)
@@ -84,7 +86,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-X main.buildTimestamp=$(date -u +%
 # Build monitor (no console window)
 GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -X main.buildTimestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o accountRotateMonitor.exe ./cmd/accountrotate-monitor
 
-# (Optional) Add Windows version metadata with [rcedit](https://github.com/electron/rcedit)
+# (Optional) Add Windows version metadata with `rcedit`
 rcedit sharedAccountRotate.exe --set-file-version "$VERSION" \
   --set-product-version "$VERSION" \
   --set-version-string "ProductName" "Shared Account Rotate" \
