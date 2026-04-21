@@ -24,9 +24,9 @@ This automatically:
 - Creates `C:\Program Files\sharedAccountRotate\` (binaries)
 - Creates `C:\ProgramData\sharedAccountRotate\` (logs, state, idle file)
 - Registers the service with `StartType=Automatic`
+- Starts the service
 - Installs a Startup folder shortcut for the idle monitor helper
 
-Then the service will start automatically.
 > You will need to reboot or logout the kiosk account for the monitor to start properly!
 
 The service will now rotate the password every 30 days when the workstation has been idle for 2 hours (defaults).
