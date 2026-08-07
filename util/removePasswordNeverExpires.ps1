@@ -12,7 +12,7 @@ foreach ($pcName in $pcNames) {
         # Uncheck "Password never expires"
         Set-ADUser -Identity $user -PasswordNeverExpires $false
         
-        Write-Host "Disabled Password Never Expires for $pcName" -ForegroundColor Green
+        Write-Host "Removed Password Never Expires for $pcName" -ForegroundColor Green
     }
     catch {
         Write-Host "Failed: $_" -ForegroundColor Red
